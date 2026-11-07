@@ -40,6 +40,19 @@
   const pClass = p => (p == null ? '' : p >= 0.6 ? 'hi' : p >= 0.45 ? 'mid' : 'lo');
   const lineTxt = l => (l == null ? '' : String(l));
 
+  // Перевага ставки: ймовірність × кф − 1. ≥ 0 — за моделлю ставка не в мінусі (★, золотий).
+  // У кожному матчі варіант з найбільшою перевагою — найкращий (зелена рамка).
+  const edgeOf = c => (c && c.ok && c.p != null ? c.p * c.odds - 1 : null);
+  let best = new Set();
+  function markBest(rows) {
+    best = new Set();
+    for (const r of rows) {
+      const ok = r.bets.filter(c => c.ok);
+      if (ok.length) best.add(ok.reduce((a, b) => (edgeOf(b) > edgeOf(a) ? b : a)).id);
+    }
+  }
+  const betName = (r, c) => (r.type === 'card' ? `${MK.get(c.key).label} ТБ ${lineTxt(c.line)}` : r.type === 'tot' ? 'ТБ 2.5' : `${esc(r.ev[r.side].short)} ${MK.get(c.key).label}`);
+
   // ---------- дані ----------
   async function fetchJournal() {
     try {
@@ -153,19 +166,36 @@
   function cellHtml(c, idx, top = '') {
     if (!c || c.odds == null) return `<td class="c none">${top}<span>немає<br>в лінії</span></td>`;
     if (!c.ok) return `<td class="c low">${top}<b>${k2(c.odds)}</b><small>${pct(c.p)}</small><em>кф &lt; ${CFG.MIN_ODDS}</em></td>`;
-    const st = idx.get(c.id);
-    return `<td class="c ok">${top}<b>${k2(c.odds)}</b><small class="${pClass(c.p)}">${pct(c.p)}</small>${st ? `<em>С${st}</em>` : ''}</td>`;
+    const st = idx.get(c.id), e = edgeOf(c);
+    return `<td class="c ok ${e >= 0 ? 'gold' : ''} ${best.has(c.id) ? 'best' : ''}">${top}<b>${k2(c.odds)}</b><small class="${pClass(c.p)}">${pct(c.p)}</small><em>${e >= 0 ? '<span class="star">★</span> ' : ''}${st ? `С${st}` : ''}</em></td>`;
+  }
+
+  // Топ-8 ставок вкладки за перевагою.
+  function topPicks(rows, idx) {
+    const list = rows.flatMap(r => r.bets.filter(c => c.ok).map(c => ({ r, c }))).sort((a, b) => edgeOf(b.c) - edgeOf(a.c)).slice(0, 8);
+    if (!list.length) return '';
+    return `<section class="card top"><h3>★ Найкращі варіанти</h3><div class="tw"><table class="grid">
+      <thead><tr><th>Матч · ставка</th><th>Кф</th><th>Перевага</th></tr></thead>
+      <tbody>${list.map(({ r, c }) => {
+        const e = edgeOf(c), st = idx.get(c.id);
+        return `<tr class="${e >= 0 ? 'gold' : ''}"><td class="m"><b class="t">${dateOf(r.ev.ts)} ${timeOf(r.ev.ts)}</b> ${esc(r.ev.home.short)} – ${esc(r.ev.away.short)}
+          <small><b class="pick">${betName(r, c)}</b> · ${tourn(r)}${st ? ` · С${st}` : ''}</small></td>
+          <td><b>${k2(c.odds)}</b><small class="${pClass(c.p)}">${pct(c.p)}</small></td>
+          <td class="${e >= 0 ? 'ok' : ''}">${e >= 0 ? '★ ' : ''}${e >= 0 ? '+' : '−'}${Math.abs(Math.round(e * 100))}%</td></tr>`;
+      }).join('')}</tbody></table></div>
+      <p class="hint">Перевага = ймовірність × кф − 1. ★ і золотий — перевага від 0%: за моделлю ставка не в мінусі. Від'ємна — букмекер закладає більше, ніж дає модель.</p></section>`;
   }
   const tourn = r => `${esc(league(r.ev.slug).short)}`;
   const timeCell = r => `<b class="t">${timeOf(r.ev.ts)}</b>`;
   const hint = html => `<p class="hint">${html}</p>`;
-  const legend = () => hint(`Кф — VBET, у рекомендаціях лише від ${CFG.MIN_ODDS}. Під кф — ймовірність виграшу (без урахування повернень): модель + ринок VBET. «С3» — ставка йде в статистику №3: матчі, що перетинаються в часі, рахуються в різних статистиках (кожна — ${money(CFG.BANK)}, ставка ${CFG.STAKE} грн).`);
+  const legend = () => hint(`Кф — VBET, у рекомендаціях лише від ${CFG.MIN_ODDS}. Під кф — ймовірність виграшу (без урахування повернень): модель + ринок VBET. <span class="lg best">рамка</span> — найкращий варіант у матчі, <span class="lg gold">★ золотий</span> — перевага від 0% (ймовірність × кф ≥ 1). «С3» — ставка йде в статистику №3: матчі, що перетинаються в часі, рахуються в різних статистиках (кожна — ${money(CFG.BANK)}, ставка ${CFG.STAKE} грн).`);
 
   // Таблиця по днях з розділенням: є ставка з кф від 1.49 / немає.
   function dayTables(rows, head, rowHtml, hasBet) {
+    markBest(rows);
     const good = rows.filter(hasBet), rest = rows.filter(r => !hasBet(r));
     const table = list => `<div class="tw"><table class="grid">${head}<tbody>${list.map(rowHtml).join('')}</tbody></table></div>`;
-    return `${good.length ? byDay(good).map(list => `<section class="card"><h3>${dayTitle(list[0].ev.ts)} · ${list.length}</h3>${table(list)}</section>`).join('')
+    return `${topPicks(good, streamIndex())}${good.length ? byDay(good).map(list => `<section class="card"><h3>${dayTitle(list[0].ev.ts)} · ${list.length}</h3>${table(list)}</section>`).join('')
       : '<div class="empty">Найближчі 3 дні немає матчів, що підходять, з кф VBET від 1.49.</div>'}
       ${rest.length ? `<details class="more card"><summary>Підходять, але кф VBET нижчий за ${CFG.MIN_ODDS} або ринку немає · ${rest.length}</summary>${table(rest)}</details>` : ''}`;
   }

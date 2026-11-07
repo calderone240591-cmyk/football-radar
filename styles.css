@@ -12,6 +12,7 @@
   --dry: #b8432f;
   --dry-bg: #fbe9e5;
   --warn-bg: #fff4dc;
+  --gold: #d99a06;
   --radius: 14px;
   color-scheme: light;
 }
@@ -19,13 +20,13 @@
   :root:not([data-theme="light"]) {
     --bg: #0d1210; --surface: #151c18; --surface-2: #1e2722; --text: #e6ece8; --muted: #8b978f;
     --line: #26302a; --accent: #3cc98a; --ok: #3cc98a; --bad: #ec7a66; --mid: #e3ab43;
-    --dry: #f08a76; --dry-bg: #3a201b; --warn-bg: #352a12; color-scheme: dark;
+    --dry: #f08a76; --dry-bg: #3a201b; --warn-bg: #352a12; --gold: #f2bd3c; color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0d1210; --surface: #151c18; --surface-2: #1e2722; --text: #e6ece8; --muted: #8b978f;
   --line: #26302a; --accent: #3cc98a; --ok: #3cc98a; --bad: #ec7a66; --mid: #e3ab43;
-  --dry: #f08a76; --dry-bg: #3a201b; --warn-bg: #352a12; color-scheme: dark;
+  --dry: #f08a76; --dry-bg: #3a201b; --warn-bg: #352a12; --gold: #f2bd3c; color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -95,6 +96,16 @@ td.c small { font-size: 12px; font-weight: 600; }
 td.c em { display: block; font-style: normal; font-size: 10.5px; color: var(--muted); margin-top: 1px; }
 td.c .ln { display: block; font-size: 11px; color: var(--muted); }
 td.c.ok { background: color-mix(in srgb, var(--ok) 7%, transparent); }
+td.c.gold { background: color-mix(in srgb, var(--gold) 22%, transparent); }
+td.c.best { box-shadow: inset 0 0 0 2px var(--ok); border-radius: 8px; }
+td.c.gold.best { box-shadow: inset 0 0 0 2px var(--gold); }
+.star { color: var(--gold); font-size: 12px; }
+.card.top { border-color: color-mix(in srgb, var(--gold) 60%, var(--line)); }
+.card.top tr.gold td { background: color-mix(in srgb, var(--gold) 14%, transparent); }
+.pick { color: var(--text); }
+.lg { padding: 0 4px; border-radius: 4px; white-space: nowrap; }
+.lg.best { box-shadow: inset 0 0 0 1.5px var(--ok); }
+.lg.gold { background: color-mix(in srgb, var(--gold) 25%, transparent); }
 td.c.low b, td.c.low small { color: var(--muted); font-weight: 500; }
 td.c.none, td.c.skip { color: var(--muted); font-size: 11px; }
 small.hi { color: var(--ok) !important; }
