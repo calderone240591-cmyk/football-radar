@@ -4,7 +4,8 @@
 // Ключі ринків у book (лінія — число з крапкою):
 //   1, X, 2 — результат;  O2.5 / U2.5 — тотал голів матчу (1.5, 2.5, 3.5);
 //   T1O1.5 / T1U1.5 — індивідуальний тотал господарів, T2… — гостей (0.5, 1, 1.5, 2, 2.5);
-//   YO3.5 / YU3.5 — жовті картки матчу;  Y1O0.5 / Y1U0.5 — жовті 1-го тайму;  CO9.5 / CU9.5 — кутові матчу.
+//   YO3.5 / YU3.5 — жовті картки матчу;  Y1O0.5 / Y1U0.5 — жовті 1-го тайму;  CO9.5 / CU9.5 — кутові матчу;
+//   C1O4.5 / C1U4.5 — кутові 1-го тайму.
 // Цілі лінії (1, 2, 3…) — азійські: рівно стільки — повернення ставки.
 FP.vbet = (() => {
   const SOCKET = 'wss://eu-swarm-newm.betcoswarm.com/';
@@ -30,6 +31,7 @@ FP.vbet = (() => {
     YellowCardsOverUnder: { prefix: 'Y', ok: b => whole(b) && b >= 1 && b <= 9 },
     '1stHalfYellowCardsOver/Under': { prefix: 'Y1', ok: b => whole(b) && b >= 0.5 && b <= 4 },
     CornersOverUnder: { prefix: 'C', ok: b => whole(b) && b >= 4 && b <= 15 },
+    HalfTimeCornersOverUnder: { prefix: 'C1', ok: b => whole(b) && b >= 1 && b <= 9 },
   };
   const TYPES = Object.keys(MARKETS);
 

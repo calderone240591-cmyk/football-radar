@@ -42,7 +42,7 @@ function saveCache() {
   const keep = {};
   for (const [k, v] of kv) {
     const m = /^m2:.+:(\d{6})$/.exec(k);
-    if (/^pm2:/.test(k) || (m && m[1] < cur)) keep[k] = v;
+    if (/^(pm2|c1):/.test(k) || (m && m[1] < cur)) keep[k] = v;
   }
   fs.writeFileSync(CACHE, JSON.stringify(keep));
 }
@@ -54,6 +54,8 @@ async function once() {
   if (journal.version !== CFG.VERSION || !journal.bets) journal = { version: CFG.VERSION, bets: {} };
 
   const { seasons, errors } = await api.allSeasons(false);
+  const pendingC1 = Object.values(journal.bets).filter(b => b.key === 'c1' && !b.res).map(b => b.ev);
+  await api.addHalfCorners(engine.halfCornerNeeds(seasons, now, pendingC1));
   await vbet.load(true);
   const vb = vbet.status();
   const res = engine.analyze(seasons, vbet.book, now);

@@ -143,6 +143,37 @@ FP.api = (() => {
     return out;
   }
 
+  // Кутові 1-го тайму кожної команди — з текстового коментаря матчу (у розкладі ESPN їх немає).
+  // Рахуємо, лише коли в коментарі всі кутові матчу, інакше null. Матч уже не зміниться — кеш на рік.
+  function halfCorners(slug, ev) {
+    return cached(`c1:${ev.id}`, 365 * 24 * 60 * MIN, `${SITE}${slug}/summary?event=${ev.id}`, d => {
+      const list = (d.commentary || []).filter(x => /^Corner,/.test(x.text || ''));
+      if (!list.length || ev.home.c == null || ev.away.c == null || list.length !== ev.home.c + ev.away.c) return null;
+      let h = 0, a = 0;
+      for (const x of list) {
+        const period = x.play && x.play.period ? x.play.period.number : (minuteOf(x.time && x.time.displayValue) <= 45 ? 1 : 2);
+        if (period !== 1) continue;
+        const name = (x.play && x.play.team && x.play.team.displayName) || (/^Corner, ([^.]+)\./.exec(x.text) || [])[1];
+        if (name === ev.home.name) h++;
+        else if (name === ev.away.name) a++;
+        else return null;
+      }
+      return { h, a };
+    });
+  }
+
+  // Дописує c1 (кутові 1-го тайму) у матчі items: [{ slug, ev }].
+  async function addHalfCorners(items, onProgress) {
+    let done = 0;
+    await pool(items, 6, async ({ slug, ev }) => {
+      let r = null;
+      try { r = await halfCorners(slug, ev); } catch {}
+      ev.home.c1 = r ? r.h : null;
+      ev.away.c1 = r ? r.a : null;
+      if (onProgress) onProgress(++done, items.length);
+    });
+  }
+
   // Усі турніри: чемпіонати — з минулим сезоном. onProgress(done, total).
   async function allSeasons(force, onProgress) {
     let done = 0, errors = 0;
@@ -156,5 +187,5 @@ FP.api = (() => {
     return { seasons: list.filter(Boolean), errors };
   }
 
-  return { season, allSeasons, pool };
+  return { season, allSeasons, addHalfCorners, pool };
 })();

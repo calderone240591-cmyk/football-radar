@@ -6,7 +6,8 @@
 //   • Тотали: у 2+ останніх матчах команди не було ТБ 2.5 → ТБ 2.5 у її наступному матчі
 //     (окремо — коли так в обох команд);
 //   • Картки й кутові: у кожному з 2 останніх матчів команда отримала ≤ 1 жовтої (ЖК матчу),
-//     0 жовтих у 1-му таймі (ЖК 1-го тайму), подала ≤ 3 кутових (кутові) → ТБ відповідного тоталу матчу.
+//     0 жовтих у 1-му таймі (ЖК 1-го тайму), подала ≤ 1 кутового в 1-му таймі (кутові 1-го тайму, лише турніри
+//     з коментарем ESPN — FP.C1_COMPS), подала ≤ 3 кутових (кутові) → ТБ відповідного тоталу матчу.
 // Ймовірність: модель (голи — рейтинги команд, картки й кутові — середні сезону) + ринок VBET 70/30.
 FP.engine = (() => {
   const { CFG } = FP;
@@ -27,8 +28,10 @@ FP.engine = (() => {
     { key: 't25b', tab: 'tot', label: 'ТБ 2.5 · обидві команди', line: 2.5 },
     { key: 'y1', tab: 'card', label: 'ЖК 1-й тайм', prefix: 'Y1', field: 'y1', max: CFG.Y1_MAX, disp: CARDS_DISP },
     { key: 'y', tab: 'card', label: 'ЖК матч', prefix: 'Y', field: 'y', max: CFG.Y_MAX, disp: CARDS_DISP },
+    { key: 'c1', tab: 'card', label: 'Кутові 1-й тайм', prefix: 'C1', field: 'c1', max: CFG.C1_MAX, disp: CORNERS_DISP },
     { key: 'c', tab: 'card', label: 'Кутові', prefix: 'C', field: 'c', max: CFG.C_MAX, disp: CORNERS_DISP },
   ];
+  const AGAINST = { c: 'ca', y: 'ya', y1: 'y1a', c1: 'c1a' };
   const MARKET = new Map(MARKETS.map(m => [m.key, m]));
   const DRY = MARKETS.filter(m => m.tab === 'dry');
   const CARD = MARKETS.filter(m => m.tab === 'card');
@@ -80,6 +83,7 @@ FP.engine = (() => {
           games.get(me.id).push({
             ts: e.ts, cur, slug: s.comp.slug, opp: op.id, oppName: op.short || op.name, g: me.score, ga: op.score,
             c: f.c ? me.c : null, ca: f.c ? op.c : null,
+            c1: f.c && me.c1 != null && op.c1 != null ? me.c1 : null, c1a: f.c && me.c1 != null && op.c1 != null ? op.c1 : null,
             y: f.y ? me.y : null, ya: f.y ? op.y : null, y1: f.y ? me.y1 : null, y1a: f.y ? op.y1 : null,
           });
         }
@@ -107,13 +111,13 @@ FP.engine = (() => {
     const lowIn = (id, mk) => { const l = last2(id); return !!l && l.every(x => x[mk.field] != null && x[mk.field] <= mk.max); };
 
     // ---------- середні сезону для карток і кутових (згладжені до загального середнього) ----------
-    const sums = new Map(), tot = { c: [0, 0], y: [0, 0], y1: [0, 0] };
+    const sums = new Map(), tot = { c: [0, 0], y: [0, 0], y1: [0, 0], c1: [0, 0] };
     for (const [id, l] of games) {
-      const a = { c: [0, 0, 0], y: [0, 0, 0], y1: [0, 0, 0] };
+      const a = { c: [0, 0, 0], y: [0, 0, 0], y1: [0, 0, 0], c1: [0, 0, 0] };
       for (const x of l) {
         if (!x.cur) continue;
-        for (const k of ['c', 'y', 'y1']) {
-          const f = x[k], ag = x[k === 'c' ? 'ca' : k === 'y' ? 'ya' : 'y1a'];
+        for (const k of ['c', 'y', 'y1', 'c1']) {
+          const f = x[k], ag = x[AGAINST[k]];
           if (f == null || ag == null) continue;
           a[k][0] += f; a[k][1] += ag; a[k][2]++;
           tot[k][0] += f; tot[k][1]++;
@@ -121,7 +125,7 @@ FP.engine = (() => {
       }
       sums.set(id, a);
     }
-    const prior = k => (tot[k][1] > 50 ? tot[k][0] / tot[k][1] : { c: 5, y: 2, y1: 0.8 }[k]);
+    const prior = k => (tot[k][1] > 50 ? tot[k][0] / tot[k][1] : { c: 5, y: 2, y1: 0.8, c1: 2.2 }[k]);
     const shrink = (sum, n, p, k = 3) => (sum + p * k) / (n + k);
     const teamAvg = (id, k) => {
       const a = sums.get(id), p = prior(k);
@@ -202,6 +206,7 @@ FP.engine = (() => {
       // Картки й кутові.
       const cards = [];
       for (const mk of CARD) {
+        if (mk.key === 'c1' && !FP.C1_COMPS.has(x.slug)) continue;   // не буде чим розрахувати
         const q = sides.filter(sd => lowIn(ev[sd].id, mk));
         if (!q.length) continue;
         const mean = matchMean(ev.home.id, ev.away.id, mk.field);
@@ -219,7 +224,7 @@ FP.engine = (() => {
         const crit = {};
         for (const sd of sides) {
           const l = last2(ev[sd].id);
-          if (l) crit[sd] = l.map(g => ({ ts: g.ts, vs: g.oppName, y: g.y, y1: g.y1, c: g.c }));
+          if (l) crit[sd] = l.map(g => ({ ts: g.ts, vs: g.oppName, y: g.y, y1: g.y1, c: g.c, c1: g.c1 }));
         }
         rows.push({ type: 'card', ev: base, crit, bets: cards });
       }
@@ -238,7 +243,7 @@ FP.engine = (() => {
       if (nd >= CFG.DRY_MIN) lists.dry.push({ ...info, n: nd, lastGoal: lastGoal(id) });
       if (nu >= CFG.UNDER_MIN) lists.under.push({ ...info, n: nu });
       const flags = CARD.filter(mk => lowIn(id, mk)).map(mk => mk.key);
-      if (flags.length) lists.low.push({ ...info, flags, last: last2(id).map(g => ({ ts: g.ts, vs: g.oppName, y: g.y, y1: g.y1, c: g.c })) });
+      if (flags.length) lists.low.push({ ...info, flags, last: last2(id).map(g => ({ ts: g.ts, vs: g.oppName, y: g.y, y1: g.y1, c: g.c, c1: g.c1 })) });
     }
 
     return { at: Math.round(now), rows, bets, evaluated, keep, ...lists };
@@ -259,8 +264,35 @@ FP.engine = (() => {
     else if (b.key === 'y') v = sum(H.y, A.y);
     else if (b.key === 'y1') v = sum(H.y1, A.y1);
     else if (b.key === 'c') v = sum(H.c, A.c) || null;   // 0 кутових у сумі — даних немає
+    else if (b.key === 'c1') v = sum(H.c1, A.c1);
     if (v == null) return null;
     return { res: v > b.line ? 'win' : v === b.line ? 'void' : 'loss', v };
+  }
+
+  // Матчі, для яких потрібні кутові 1-го тайму (коментар ESPN — окремий запит на кожен матч): 2 останні зіграні
+  // матчі обох команд кожного майбутнього матчу в межах 3 днів у турнірах з коментарем, і матчі ставок extraIds,
+  // які ще треба розрахувати. Лише матчі, що закінчились щонайменше 4 год тому: коментар уже повний.
+  function halfCornerNeeds(seasons, now = Date.now() / 1000, extraIds = []) {
+    const fin = new Map(), byId = new Map();
+    for (const s of seasons) for (const e of s.events) {
+      byId.set(e.id, { slug: s.comp.slug, ev: e });
+      if (!G.isResult(e) || e.ts > now - 4 * 3600) continue;
+      for (const t of [e.home, e.away]) { if (!fin.has(t.id)) fin.set(t.id, []); fin.get(t.id).push({ slug: s.comp.slug, ev: e }); }
+    }
+    for (const l of fin.values()) l.sort((a, b) => a.ev.ts - b.ev.ts);
+    const out = new Map();
+    for (const s of seasons) {
+      if (!FP.C1_COMPS.has(s.comp.slug)) continue;
+      for (const e of s.events) {
+        if (e.state !== 'pre' || e.ts <= now || e.ts > now + CFG.HORIZON) continue;
+        for (const t of [e.home, e.away]) for (const x of (fin.get(t.id) || []).slice(-2)) if (FP.C1_COMPS.has(x.slug)) out.set(x.ev.id, x);
+      }
+    }
+    for (const id of extraIds) {
+      const x = byId.get(id);
+      if (x && G.isResult(x.ev) && x.ev.ts <= now - 4 * 3600) out.set(id, x);
+    }
+    return [...out.values()];
   }
 
   const profit = b => (b.res === 'win' ? CFG.STAKE * (b.odds - 1) : b.res === 'loss' ? -CFG.STAKE : 0);
@@ -322,5 +354,5 @@ FP.engine = (() => {
     return out;
   }
 
-  return { analyze, settle, profit, updateJournal, streams, MARKETS, MARKET };
+  return { analyze, settle, profit, updateJournal, streams, halfCornerNeeds, MARKETS, MARKET };
 })();
