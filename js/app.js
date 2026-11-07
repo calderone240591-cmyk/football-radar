@@ -37,7 +37,8 @@
   };
   const nMatches = n => `${n} ${plural(n, 'матч', 'матчі', 'матчів')}`;
   const league = slug => FP.LEAGUE_BY_SLUG.get(slug) || { short: '', country: '', name: '' };
-  const pClass = p => (p == null ? '' : p >= 0.6 ? 'hi' : p >= 0.45 ? 'mid' : 'lo');
+  // Ймовірність від 54% — підсвічена зеленим, нижче — сіра.
+  const pClass = p => (p == null ? '' : p >= 0.54 ? 'hi' : 'lo');
   const lineTxt = l => (l == null ? '' : String(l));
 
   // Перевага ставки: ймовірність × кф − 1. ≥ 0 — за моделлю ставка не в мінусі (★, золотий).
@@ -264,7 +265,7 @@
     return `<small class="livel"><b>${pair(H.score, A.score)}</b> · кут ${pair(H.c, A.c)}${H.c1 != null ? ` (1т ${pair(H.c1, A.c1)})` : ''} · ЖК ${pair(H.y, A.y)}</small>`;
   };
   const hint = html => `<p class="hint">${html}</p>`;
-  const legend = () => hint(`Кф — VBET, у рекомендаціях лише від ${CFG.MIN_ODDS}. Під кф — ймовірність виграшу (без урахування повернень): модель + ринок VBET. <span class="lg best">рамка</span> — найкращий варіант у матчі, <span class="lg gold">★ золотий</span> — перевага від 0% (ймовірність × кф ≥ 1). «С3» — ставка йде в статистику №3: матчі, що перетинаються в часі, рахуються в різних статистиках (кожна — ${money(CFG.BANK)}, ставка ${CFG.STAKE} грн).`);
+  const legend = () => hint(`Кф — VBET, у рекомендаціях лише від ${CFG.MIN_ODDS}. Під кф — ймовірність виграшу (без урахування повернень): модель + ринок VBET; <span class="lg phi">від 54%</span> — зелена. <span class="lg best">рамка</span> — найкращий варіант у матчі, <span class="lg gold">★ золотий</span> — перевага від 0% (ймовірність × кф ≥ 1). «С3» — ставка йде в статистику №3: матчі, що перетинаються в часі, рахуються в різних статистиках (кожна — ${money(CFG.BANK)}, ставка ${CFG.STAKE} грн).`);
 
   // Таблиця по днях з розділенням: є ставка з кф від 1.49 / немає.
   function dayTables(rows, head, rowHtml, hasBet) {

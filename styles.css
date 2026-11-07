@@ -109,6 +109,7 @@ details.more .desc { margin-top: 4px; }
 .grid td small.what { color: var(--text); opacity: .8; }
 .lg { padding: 0 4px; border-radius: 4px; white-space: nowrap; }
 .lg.best { box-shadow: inset 0 0 0 1.5px var(--ok); }
+.lg.phi { color: var(--ok); font-weight: 700; background: color-mix(in srgb, var(--ok) 18%, transparent); }
 .lg.gold { background: color-mix(in srgb, var(--gold) 25%, transparent); }
 td.c.low b, td.c.low small { color: var(--muted); font-weight: 500; }
 td.c.none, td.c.skip { color: var(--muted); font-size: 11px; }
@@ -122,7 +123,8 @@ b.t.live { font-size: 12.5px; animation: blink 2s ease-in-out infinite; }
 td.c.win { background: color-mix(in srgb, var(--ok) 20%, transparent); }
 td.c.win b { color: var(--ok); }
 td.c.lost b { color: var(--bad); }
-small.hi { color: var(--ok) !important; }
+small.hi { color: var(--ok) !important; font-weight: 700; }
+td.c small.hi, .grid td small.hi { display: inline-block; background: color-mix(in srgb, var(--ok) 18%, transparent); border-radius: 5px; padding: 0 4px; }
 small.mid { color: var(--mid) !important; }
 small.lo { color: var(--muted) !important; }
 
