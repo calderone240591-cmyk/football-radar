@@ -80,7 +80,8 @@ FP.api = (() => {
       home: side(c, 'home'),
       away: side(c, 'away'),
     };
-    if (st.state === 'post') addFacts(ev, c);
+    if (st.state === 'in') { ev.clock = st.shortDetail || e.status.displayClock || ''; ev.period = e.status.period || 0; }
+    if (st.state !== 'pre') addFacts(ev, c);   // під час матчу — поточні кутові й картки
     return ev;
   }
 
@@ -174,6 +175,50 @@ FP.api = (() => {
     });
   }
 
+  // ---------- live ----------
+  // Матчі турніру за дні, коли починаються матчі tss, без кешу — поточний рахунок, хвилина, кутові, картки.
+  // ESPN приймає лише один день за запит; день — за UTC, а пізні матчі він відносить до дня за часом США,
+  // тож беремо і день на 6 год раніше.
+  const ymd = ts => { const d = new Date(ts * 1000); return `${d.getUTCFullYear()}${FP.pad(d.getUTCMonth() + 1)}${FP.pad(d.getUTCDate())}`; };
+  async function liveEvents(slug, tss) {
+    const days = [...new Set(tss.flatMap(ts => [ymd(ts), ymd(ts - 6 * 3600)]))];
+    const parts = await Promise.all(days.map(d => getJson(`${SITE}${slug}/scoreboard?dates=${d}`).then(x => x.events || [], () => [])));
+    return parts.flat().map(slimEvent);
+  }
+
+  // Кутові 1-го тайму матчу, що йде, — з коментаря, без кешу. null — команда в коментарі не впізнана.
+  async function liveHalfCorners(slug, ev) {
+    const d = await getJson(`${SITE}${slug}/summary?event=${ev.id}`);
+    let h = 0, a = 0;
+    for (const x of (d.commentary || []).filter(y => /^Corner,/.test(y.text || ''))) {
+      const period = x.play && x.play.period ? x.play.period.number : (minuteOf(x.time && x.time.displayValue) <= 45 ? 1 : 2);
+      if (period !== 1) continue;
+      const name = (x.play && x.play.team && x.play.team.displayName) || (/^Corner, ([^.]+)\./.exec(x.text) || [])[1];
+      if (name === ev.home.name) h++;
+      else if (name === ev.away.name) a++;
+      else return null;
+    }
+    return { h, a };
+  }
+
+  // Свіжі дані матчів items: [{ slug, id, ts, c1 }] → Map(id → ev). c1 — потрібні кутові 1-го тайму (з коментаря).
+  async function live(items) {
+    const bySlug = new Map();
+    for (const x of items) { if (!bySlug.has(x.slug)) bySlug.set(x.slug, []); bySlug.get(x.slug).push(x); }
+    const out = new Map();
+    await pool([...bySlug], 4, async ([slug, list]) => {
+      let evs = [];
+      try { evs = await liveEvents(slug, list.map(x => x.ts)); } catch { return; }
+      const want = new Map(list.map(x => [x.id, x]));
+      for (const e of evs) if (want.has(e.id)) out.set(e.id, e);
+      await pool(list.filter(x => x.c1 && out.has(x.id) && out.get(x.id).state === 'in' && FP.C1_COMPS.has(slug)), 3, async x => {
+        const e = out.get(x.id);
+        try { const r = await liveHalfCorners(slug, e); if (r) { e.home.c1 = r.h; e.away.c1 = r.a; } } catch {}
+      });
+    });
+    return out;
+  }
+
   // Усі турніри: чемпіонати — з минулим сезоном. onProgress(done, total).
   async function allSeasons(force, onProgress) {
     let done = 0, errors = 0;
@@ -187,5 +232,5 @@ FP.api = (() => {
     return { seasons: list.filter(Boolean), errors };
   }
 
-  return { season, allSeasons, addHalfCorners, pool };
+  return { season, allSeasons, addHalfCorners, live, pool };
 })();

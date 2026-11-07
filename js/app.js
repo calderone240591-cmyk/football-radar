@@ -8,7 +8,7 @@
   const $view = document.getElementById('view');
   const $title = document.getElementById('title');
   const $upd = document.getElementById('upd');
-  const state = { journal: null, local: null, localBusy: null, loading: null, progress: '' };
+  const state = { journal: null, local: null, localBusy: null, loading: null, progress: '', live: new Map(), liveBusy: null };
 
   // ---------- форматування ----------
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -88,6 +88,8 @@
         state.progress = 'Рахую на пристрої: кф VBET…'; paintProgress();
         await FP.vbet.load(true);
         const res = engine.analyze(seasons, FP.vbet.book);
+        const prev = state.journal && state.journal.snapshot ? state.journal.snapshot.rows : [];
+        res.rows = res.rows.concat(engine.liveRows(prev, seasons, nowS(), state.live));   // матчі, що вже йдуть
         const vb = FP.vbet.status();
         state.local = { ...res, errors, vbet: { games: vb.games, error: vb.error }, local: true };
       } catch (e) {
@@ -113,10 +115,48 @@
     return state.loading;
   }
 
+  // ---------- live-моніторинг ----------
+  // Поки є матчі, що йдуть (рекомендація чи ставка без результату), раз на хвилину беремо з ESPN рахунок,
+  // хвилину, кутові й картки. Ставка, що вже зайшла, одразу показується виграною — сервер підтвердить її
+  // за кілька хвилин.
+  async function pollLive() {
+    if (state.liveBusy) return state.liveBusy;
+    const s = snapshot();
+    const need = engine.liveNeeds(journalBets(), s ? s.rows : []);
+    if (!need.length) return false;
+    state.liveBusy = FP.api.live(need)
+      .then(m => { for (const [id, e] of m) state.live.set(id, e); return true; })
+      .catch(() => false)
+      .finally(() => { state.liveBusy = null; });
+    return state.liveBusy;
+  }
+  // Поточний стан матчу: свіжий з ESPN на пристрої, інакше — із серверного знімка.
+  const liveEv = (id, fallback) => {
+    const e = state.live.get(id);
+    if (!e) return fallback || null;
+    if (fallback && e.home.c1 == null && fallback.home.c1 != null) return { ...e, home: { ...e.home, c1: fallback.home.c1 }, away: { ...e.away, c1: fallback.away.c1 } };
+    return e;
+  };
+  const isStarted = r => r.ev.ts <= nowS();
+  // Рядок рекомендації показується, поки матч не почався, або поки він іде.
+  const rowVisible = r => {
+    if (!isStarted(r)) return true;
+    if (nowS() - r.ev.ts > 4 * 3600) return false;
+    const e = liveEv(r.ev.id, r.live);
+    return e ? e.state !== 'post' : nowS() - r.ev.ts < 2.5 * 3600;
+  };
+
   // ---------- ставки й паралельні статистики ----------
+  const journalBets = () => (state.journal ? Object.values(state.journal.bets) : []);
   // Усі ставки журналу; у режимі «на пристрої» — ще й нові рекомендації, яких сервер не записав.
+  // Ставка без результату, що вже зайшла під час матчу (дані ESPN на пристрої), — виграна достроково.
   function allBets() {
-    const j = state.journal ? Object.values(state.journal.bets) : [];
+    const j = journalBets().map(b => {
+      if (b.res || b.ts > nowS()) return b;
+      const e = state.live.get(b.ev);
+      const s = e && e.state === 'in' ? engine.settle(b, e) : null;
+      return s && s.res ? { ...b, res: s.res, v: s.v, note: s.note, early: true, prov: true } : b;
+    });
     const ids = new Set(j.map(b => b.id));
     const extra = state.local ? state.local.bets.filter(b => !ids.has(b.id) && b.ts > nowS() && b.ts >= CFG.STATS_FROM).map(b => ({ ...b, res: null, local: true })) : [];
     return j.concat(extra);
@@ -156,16 +196,36 @@
   };
   const noData = () => `<div class="empty">${state.loading || state.localBusy ? 'Завантаження…' : 'Немає даних. Перевірте інтернет і натисніть «Оновити».'}</div>`;
 
-  // Рядки рекомендацій одного типу на матчі, що ще не почались, по днях.
-  const upcomingRows = type => (snapshot() ? snapshot().rows : []).filter(r => r.type === type && r.ev.ts > nowS()).sort((a, b) => a.ev.ts - b.ev.ts || (a.ev.id < b.ev.id ? -1 : 1));
+  // Рядки рекомендацій одного типу: матчі, що йдуть, і ті, що ще не почались — за часом (сьогодні першим).
+  const upcomingRows = type => (snapshot() ? snapshot().rows : []).filter(r => r.type === type && rowVisible(r)).sort((a, b) => a.ev.ts - b.ev.ts || (a.ev.id < b.ev.id ? -1 : 1));
   function byDay(rows) {
     const days = new Map();
     for (const r of rows) { const k = dayStart(r.ev.ts); if (!days.has(k)) days.set(k, []); days.get(k).push(r); }
     return [...days.values()];
   }
 
-  // Клітинка ставки: кф VBET, ймовірність, номер статистики.
-  function cellHtml(c, idx, top = '') {
+  // Результат ставки матчу, що йде: із журналу сервера, інакше — з поточних даних (зайшла достроково чи ще ні).
+  function liveBet(c, r) {
+    const jb = state.journal && state.journal.bets[c.id];
+    const e = liveEv(r.ev.id, r.live);
+    const v = e ? engine.valueOf(c.key, r.side, e) : null;
+    if (jb && jb.res) return { res: jb.res, v: jb.v ?? v };
+    const s = e ? engine.settle({ key: c.key, side: r.side, line: c.line }, e) : null;
+    return { res: s && s.res !== 'cancel' ? s.res : null, v };
+  }
+  // Скільки треба для виграшу: ТБ 2.5 → 3+, ІТБ 1 → 2+.
+  const need = line => `${Math.floor(line) + 1}+`;
+
+  // Клітинка ставки: кф VBET, ймовірність, номер статистики; у матчі, що йде, — поточне значення і чи зайшла.
+  function cellHtml(c, idx, top = '', r = null) {
+    if (r && isStarted(r)) {
+      if (!c || !c.ok) return `<td class="c skip">${top}·</td>`;
+      const st = idx.get(c.id), x = liveBet(c, r);
+      if (x.res === 'win') return `<td class="c win">${top}<b>✓</b><small>зайшла · ${x.v ?? ''}</small><em>кф ${k2(c.odds)}${st ? ` · С${st}` : ''}</em></td>`;
+      if (x.res === 'loss') return `<td class="c lost">${top}<b>✗</b><small>${x.v ?? ''}</small><em>кф ${k2(c.odds)}</em></td>`;
+      if (x.res === 'void') return `<td class="c">${top}<b>↺</b><small>повернення</small></td>`;
+      return `<td class="c ok">${top}<b>${x.v ?? '?'}</b><small>треба ${need(c.line)}</small><em>кф ${k2(c.odds)}${st ? ` · С${st}` : ''}</em></td>`;
+    }
     if (!c || c.odds == null) return `<td class="c none">${top}<span>немає<br>в лінії</span></td>`;
     if (!c.ok) return `<td class="c low">${top}<b>${k2(c.odds)}</b><small>${pct(c.p)}</small><em>кф &lt; ${CFG.MIN_ODDS}</em></td>`;
     const st = idx.get(c.id), e = edgeOf(c);
@@ -174,7 +234,9 @@
 
   // Топ-8 ставок вкладки за перевагою.
   function topPicks(rows, idx) {
-    const list = rows.flatMap(r => r.bets.filter(c => c.ok).map(c => ({ r, c }))).sort((a, b) => edgeOf(b.c) - edgeOf(a.c)).slice(0, 8);
+    // 8 найкращих за перевагою, показані за часом матчу.
+    const list = rows.flatMap(r => r.bets.filter(c => c.ok).map(c => ({ r, c }))).sort((a, b) => edgeOf(b.c) - edgeOf(a.c)).slice(0, 8)
+      .sort((a, b) => a.r.ev.ts - b.r.ev.ts || edgeOf(b.c) - edgeOf(a.c));
     if (!list.length) return '';
     return `<section class="card top"><h3>★ Найкращі варіанти</h3><div class="tw"><table class="grid">
       <thead><tr><th>Матч · ставка</th><th>Кф</th><th>Перевага</th></tr></thead>
@@ -188,16 +250,32 @@
       <p class="hint">Перевага = ймовірність × кф − 1. ★ і золотий — перевага від 0%: за моделлю ставка не в мінусі. Від'ємна — букмекер закладає більше, ніж дає модель.</p></section>`;
   }
   const tourn = r => `${esc(league(r.ev.slug).short)}`;
-  const timeCell = r => `<b class="t">${timeOf(r.ev.ts)}</b>`;
+  const timeCell = r => {
+    if (!isStarted(r)) return `<b class="t">${timeOf(r.ev.ts)}</b>`;
+    const e = liveEv(r.ev.id, r.live);
+    return `<b class="t live">● ${esc(e && e.state === 'in' ? e.clock : 'почався')}</b>`;
+  };
+  // Рядок стану матчу, що йде: рахунок, кутові, жовті (1-й тайм у дужках).
+  const liveLine = r => {
+    if (!isStarted(r)) return '';
+    const e = liveEv(r.ev.id, r.live);
+    if (!e || e.state !== 'in') return '<small class="livel">чекаю дані матчу…</small>';
+    const H = e.home, A = e.away, pair = (a, b) => (a == null || b == null ? '?' : `${a}:${b}`);
+    return `<small class="livel"><b>${pair(H.score, A.score)}</b> · кут ${pair(H.c, A.c)}${H.c1 != null ? ` (1т ${pair(H.c1, A.c1)})` : ''} · ЖК ${pair(H.y, A.y)}</small>`;
+  };
   const hint = html => `<p class="hint">${html}</p>`;
   const legend = () => hint(`Кф — VBET, у рекомендаціях лише від ${CFG.MIN_ODDS}. Під кф — ймовірність виграшу (без урахування повернень): модель + ринок VBET. <span class="lg best">рамка</span> — найкращий варіант у матчі, <span class="lg gold">★ золотий</span> — перевага від 0% (ймовірність × кф ≥ 1). «С3» — ставка йде в статистику №3: матчі, що перетинаються в часі, рахуються в різних статистиках (кожна — ${money(CFG.BANK)}, ставка ${CFG.STAKE} грн).`);
 
   // Таблиця по днях з розділенням: є ставка з кф від 1.49 / немає.
   function dayTables(rows, head, rowHtml, hasBet) {
+    const live = rows.filter(r => isStarted(r) && hasBet(r));
+    rows = rows.filter(r => !isStarted(r));
     markBest(rows);
     const good = rows.filter(hasBet), rest = rows.filter(r => !hasBet(r));
     const table = list => `<div class="tw"><table class="grid">${head}<tbody>${list.map(rowHtml).join('')}</tbody></table></div>`;
-    return `${topPicks(good, streamIndex())}${good.length ? byDay(good).map(list => `<section class="card"><h3>${dayTitle(list[0].ev.ts)} · ${list.length}</h3>${table(list)}</section>`).join('')
+    return `${live.length ? `<section class="card livec"><h3><span class="live">●</span> Зараз ідуть · ${live.length}</h3>${table(live)}
+        <p class="hint">Під матчем — рахунок, кутові (у дужках 1-й тайм) і жовті. У клітинці — скільки є зараз і скільки треба для виграшу; ✓ — ставка вже зайшла і пішла в статистику, не чекаючи кінця матчу. Оновлюється щохвилини, поки додаток відкритий.</p></section>` : ''}
+      ${topPicks(good, streamIndex())}${good.length ? byDay(good).map(list => `<section class="card"><h3>${dayTitle(list[0].ev.ts)} · ${list.length}</h3>${table(list)}</section>`).join('')
       : '<div class="empty">Найближчі 3 дні немає матчів, що підходять, з кф VBET від 1.49.</div>'}
       ${rest.length ? `<details class="more card"><summary>Підходять, але кф VBET нижчий за ${CFG.MIN_ODDS} або ринку немає · ${rest.length}</summary>${table(rest)}</details>` : ''}`;
   }
@@ -213,10 +291,10 @@
     const rowHtml = r => {
       const dry = r.ev[r.side], opp = r.ev[r.side === 'home' ? 'away' : 'home'];
       return `<tr><td class="m">${timeCell(r)} <span class="dry">${esc(dry.short)}</span> <i class="tag">${r.n} без гола</i>
-        <small>${r.side === 'home' ? 'вдома' : 'у гостях'} — ${esc(opp.short)} · ${tourn(r)}</small></td>
-        ${r.bets.map(c => cellHtml(c, idx)).join('')}</tr>`;
+        <small>${r.side === 'home' ? 'вдома' : 'у гостях'} — ${esc(opp.short)} · ${tourn(r)}</small>${liveLine(r)}</td>
+        ${r.bets.map(c => cellHtml(c, idx, '', r)).join('')}</tr>`;
     };
-    const teams = s.dry.slice().sort((a, b) => b.n - a.n || (a.next ? a.next.ts : 9e10) - (b.next ? b.next.ts : 9e10));
+    const teams = s.dry.slice().sort(byNext);
     $view.innerHTML = `${banner()}
       <p class="summary">Не забивають ${CFG.DRY_MIN}+ матчі поспіль: <b>${teams.length}</b> ${plural(teams.length, 'команда', 'команди', 'команд')} · рекомендацій: <b>${rows.filter(r => r.bets.some(c => c.ok)).length}</b></p>
       ${dayTables(rows, head, rowHtml, r => r.bets.some(c => c.ok))}
@@ -224,6 +302,9 @@
       ${hint('ІТБ — індивідуальний тотал команди, що не забиває: ІТБ 0.5 — заб\'є хоча б 1; ІТБ 1 — 2+ голи виграш, рівно 1 — повернення; ІТБ 1.5 — 2+; ІТБ 2.5 — 3+.')}
       ${teamsTable('Усі серії без голів', teams, 'Без гола', t => `<b class="n">${t.n}</b><small>${t.lastGoal ? `гол ${dateOf(t.lastGoal)}` : 'без голів'}</small>`)}`;
   }
+
+  // Команди — за часом наступного матчу (найближчий першим), без матчу в розкладі — у кінці; далі довша серія.
+  const byNext = (a, b) => (a.next ? a.next.ts : 9e10) - (b.next ? b.next.ts : 9e10) || b.n - a.n;
 
   // Таблиця поточних серій команд і їхній наступний матч.
   function teamsTable(title, list, col, valHtml) {
@@ -251,10 +332,10 @@
       return `<span class="${q ? 'dry' : ''}">${esc(r.ev[sd].short)}</span>`;
     };
     const rowHtml = r => `<tr><td class="m">${timeCell(r)} ${team(r, 'home')} – ${team(r, 'away')}
-        <small>${tourn(r)}${r.sides.length === 2 ? ' · <i class="tag both">обидві</i>' : ''}</small></td>
+        <small>${tourn(r)}${r.sides.length === 2 ? ' · <i class="tag both">обидві</i>' : ''}</small>${liveLine(r)}</td>
       <td class="streaks"><span class="${r.sides.includes('home') ? 'q' : ''}">${r.under.home}</span> · <span class="${r.sides.includes('away') ? 'q' : ''}">${r.under.away}</span></td>
-      ${cellHtml(r.bets[0], idx)}</tr>`;
-    const teams = s.under.slice().sort((a, b) => b.n - a.n || (a.next ? a.next.ts : 9e10) - (b.next ? b.next.ts : 9e10));
+      ${cellHtml(r.bets[0], idx, '', r)}</tr>`;
+    const teams = s.under.slice().sort(byNext);
     $view.innerHTML = `${banner()}
       <p class="summary">Команд без ТБ 2.5 у ${CFG.UNDER_MIN}+ матчах поспіль: <b>${teams.length}</b> · рекомендацій: <b>${rows.filter(r => r.bets[0].ok).length}</b></p>
       ${dayTables(rows, head, rowHtml, r => r.bets[0].ok)}
@@ -284,8 +365,8 @@
     }).join('');
     const rowHtml = r => {
       const by = new Map(r.bets.map(b => [b.key, b]));
-      return `<tr><td class="m">${timeCell(r)} ${esc(r.ev.home.short)} – ${esc(r.ev.away.short)}<small>${tourn(r)}</small>${critHtml(r)}</td>
-        ${CARD.map(mk => (by.has(mk.key) ? cellHtml(by.get(mk.key), idx, by.get(mk.key).line != null ? `<span class="ln">ТБ ${lineTxt(by.get(mk.key).line)}</span>` : '') : '<td class="c skip">·</td>')).join('')}</tr>`;
+      return `<tr><td class="m">${timeCell(r)} ${esc(r.ev.home.short)} – ${esc(r.ev.away.short)}<small>${tourn(r)}</small>${isStarted(r) ? liveLine(r) : critHtml(r)}</td>
+        ${CARD.map(mk => (by.has(mk.key) ? cellHtml(by.get(mk.key), idx, by.get(mk.key).line != null ? `<span class="ln">ТБ ${lineTxt(by.get(mk.key).line)}</span>` : '', r) : '<td class="c skip">·</td>')).join('')}</tr>`;
     };
     $view.innerHTML = `${banner()}
       <p class="summary">Команд, що підходять: <b>${s.low.length}</b> · матчів з рекомендацією: <b>${rows.filter(r => r.bets.some(c => c.ok)).length}</b></p>
@@ -431,7 +512,22 @@
       const h = esc(b.home), a = esc(b.away);
       return b.side === 'home' ? `<span class="dry">${h}</span> – ${a}` : b.side === 'away' ? `${h} – <span class="dry">${a}</span>` : `${h} – ${a}`;
     };
-    const bets = list.slice().sort((a, b) => b.ts - a.ts);
+    // Ідуть зараз і очікують — за часом (найближчий першим), зіграні — найсвіжіші першими.
+    const now = nowS();
+    const goingOn = list.filter(b => !b.res && b.ts <= now).sort((a, b) => a.ts - b.ts);
+    const waiting = list.filter(b => !b.res && b.ts > now).sort((a, b) => a.ts - b.ts);
+    const done = list.filter(b => b.res).sort((a, b) => b.ts - a.ts);
+    const liveTxt = b => {
+      const e = state.live.get(b.ev);
+      const clock = e && e.state === 'in' ? e.clock : b.live && b.live.clock;
+      const v = e && e.state === 'in' ? engine.valueOf(b.key, b.side, e) : b.live ? b.live.v : null;
+      return `<small class="livel">${clock ? `● ${esc(clock)}` : 'іде / розрахунок'}${v != null ? ` · зараз ${v}, треба ${need(b.line)}` : ''}</small>`;
+    };
+    const betRow = b => `<tr><td class="m"><b class="t">${dateOf(b.ts)} ${timeOf(b.ts)}</b> ${match(b)}<small>${esc(league(b.slug).short)} · С${no.get(b.id) || '?'}${b.n ? ` · без гола ${b.n}` : ''}</small></td>
+          <td>${m.tab === 'card' ? `ТБ ${lineTxt(b.line)} · ` : ''}<b>${k2(b.odds)}</b><small>${pct(b.p)}</small></td>
+          <td class="${b.res === 'win' ? 'ok' : b.res === 'loss' ? 'bad' : ''}">${b.res ? `${ICON[b.res]} ${b.res === 'void' ? '0 грн' : uah(b.profit ?? engine.profit(b))}<small>${b.v != null ? `факт ${b.v}` : ''}${b.v != null && b.note ? ' · ' : ''}${esc(b.note || '')}</small>` : b.ts > now ? '<small>очікує</small>' : liveTxt(b)}</td></tr>`;
+    const betTable = (title, l) => (l.length ? `<section class="card"><h3>${title} · ${l.length}</h3><div class="tw"><table class="grid bets">
+        <thead><tr><th>Матч</th><th>Ставка</th><th>Результат</th></tr></thead><tbody>${l.map(betRow).join('')}</tbody></table></div></section>` : '');
     $view.innerHTML = `<p class="back"><a href="#/stats">← Усі ринки</a></p>
       <div class="kpis">
         <div><b>${s.n}</b><span>зіграно<br>${s.w}/${s.l}/${s.v} · очікують ${s.pending}</span></div>
@@ -445,16 +541,23 @@
         <tbody>${st.map(x => `<tr><td><b>С${x.no}</b></td><td>${x.bets.length}${x.pending ? `<small>очікує ${x.pending}</small>` : ''}</td><td>${x.w}/${x.l}/${x.v}</td>
           <td class="${x.profit > 0 ? 'ok' : x.profit < 0 ? 'bad' : ''}"><b>${money(x.balance)}</b><small>${uah(x.profit)}</small></td></tr>`).join('')}</tbody></table></div>` : '<p class="hint">Ставок ще немає.</p>'}
         <p class="hint">Кожна статистика стартує з ${money(CFG.BANK)}; ставка ${CFG.STAKE} грн на кожен матч. Матчі в одній статистиці не перетинаються в часі.</p></section>
-      ${bets.length ? `<section class="card"><h3>Ставки · ${bets.length}</h3><div class="tw"><table class="grid bets">
-        <thead><tr><th>Матч</th><th>Ставка</th><th>Результат</th></tr></thead>
-        <tbody>${bets.map(b => `<tr><td class="m"><b class="t">${dateOf(b.ts)} ${timeOf(b.ts)}</b> ${match(b)}<small>${esc(league(b.slug).short)} · С${no.get(b.id) || '?'}${b.n ? ` · без гола ${b.n}` : ''}</small></td>
-          <td>${m.tab === 'card' ? `ТБ ${lineTxt(b.line)} · ` : ''}<b>${k2(b.odds)}</b><small>${pct(b.p)}</small></td>
-          <td class="${b.res === 'win' ? 'ok' : b.res === 'loss' ? 'bad' : ''}">${b.res ? `${ICON[b.res]} ${b.res === 'void' ? '0 грн' : uah(b.profit ?? engine.profit(b))}<small>${b.v != null ? `факт ${b.v}` : esc(b.note || '')}</small>` : `<small>${b.ts > nowS() ? 'очікує' : 'іде / розрахунок'}</small>`}</td></tr>`).join('')}</tbody></table></div></section>` : ''}`;
+      ${betTable('<span class="live">●</span> Ідуть зараз', goingOn)}
+      ${betTable('Очікують', waiting)}
+      ${betTable('Зіграні', done)}
+      ${list.length ? hint('Ставка, що зайшла під час матчу (наприклад, третій гол на ТБ 2.5), одразу йде в статистику як виграна — «достроково» з хвилиною.') : ''}`;
   }
 
   // ---------- навігація ----------
+  // Перемальовування зберігає відкриті блоки «докладно», щоб щохвилинне оновлення не згортало їх.
+  let lastHash = null;
   function render() {
     const h = location.hash.slice(1) || '/';
+    const open = h === lastHash ? [...$view.querySelectorAll('details')].map(d => d.open) : [];
+    lastHash = h;
+    route(h);
+    $view.querySelectorAll('details').forEach((d, i) => { if (open[i]) d.open = true; });
+  }
+  function route(h) {
     if (h.startsWith('/stats/')) return renderStat(h.slice(7));
     if (h.startsWith('/stats')) return renderStats();
     if (h.startsWith('/tot')) return renderTot();
@@ -470,11 +573,15 @@
   document.getElementById('refresh').addEventListener('click', async () => {
     $upd.textContent = 'оновлення…';
     await load(stale() ? 'local' : false);
+    await pollLive();
     render();
   });
   // Автооновлення журналу, поки додаток відкритий.
   setInterval(() => { if (!document.hidden) load(); }, 5 * 60 * 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load().then(live); });
+  // Live-моніторинг матчів, що йдуть: щохвилини, поки додаток відкритий.
+  const live = async () => { if (await pollLive()) render(); };
+  setInterval(() => { if (!document.hidden) live(); }, 60 * 1000);
 
   // Прибирання слідів попередніх додатків на цьому сайті (той самий домен github.io).
   (async () => {
@@ -484,6 +591,6 @@
     try { Object.keys(localStorage).filter(k => /^(fp[_:-]|fpe:|fpc:)/.test(k)).forEach(k => localStorage.removeItem(k)); } catch {}
   })();
 
-  load();
+  load().then(live);
   render();
 })();

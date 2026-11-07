@@ -56,10 +56,18 @@ async function once() {
   const { seasons, errors } = await api.allSeasons(false);
   const pendingC1 = Object.values(journal.bets).filter(b => b.key === 'c1' && !b.res).map(b => b.ev);
   await api.addHalfCorners(engine.halfCornerNeeds(seasons, now, pendingC1));
+
+  // Матчі, що йдуть: свіжий рахунок, кутові й картки (і кутові 1-го тайму з коментаря) — для дострокового
+  // розрахунку ставок і моніторингу в рекомендаціях.
+  const prevRows = (journal.snapshot && journal.snapshot.rows) || [];
+  const fresh = await api.live(engine.liveNeeds(Object.values(journal.bets), prevRows, now));
+  for (const s of seasons) s.events = s.events.map(e => fresh.get(e.id) || e);
+
   await vbet.load(true);
   const vb = vbet.status();
   const res = engine.analyze(seasons, vbet.book, now);
-  engine.updateJournal(journal, res, seasons, now);
+  engine.updateJournal(journal, res, seasons, now, fresh);
+  res.rows = res.rows.concat(engine.liveRows(prevRows, seasons, now, fresh));
 
   const { bets, evaluated, keep, ...snapshot } = res;
   journal.updatedAt = new Date().toISOString();

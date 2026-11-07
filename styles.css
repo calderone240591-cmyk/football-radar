@@ -112,6 +112,16 @@ details.more .desc { margin-top: 4px; }
 .lg.gold { background: color-mix(in srgb, var(--gold) 25%, transparent); }
 td.c.low b, td.c.low small { color: var(--muted); font-weight: 500; }
 td.c.none, td.c.skip { color: var(--muted); font-size: 11px; }
+/* ---------- live ---------- */
+.live { color: var(--bad); }
+b.t.live { font-size: 12.5px; animation: blink 2s ease-in-out infinite; }
+@keyframes blink { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { b.t.live { animation: none; } }
+.card.livec { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.grid td small.livel { color: var(--text); font-variant-numeric: tabular-nums; margin-top: 2px; }
+td.c.win { background: color-mix(in srgb, var(--ok) 20%, transparent); }
+td.c.win b { color: var(--ok); }
+td.c.lost b { color: var(--bad); }
 small.hi { color: var(--ok) !important; }
 small.mid { color: var(--mid) !important; }
 small.lo { color: var(--muted) !important; }

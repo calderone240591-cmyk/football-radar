@@ -250,23 +250,74 @@ FP.engine = (() => {
   }
 
   // ---------- розрахунок ставки ----------
+  // Значення, з яким порівнюється лінія: голи команди (сухі), голи матчу (тотали), жовті / кутові обох команд.
+  function valueOf(key, side, ev) {
+    const H = ev.home, A = ev.away;
+    const sum = (a, c) => (a == null || c == null ? null : a + c);
+    if (key[0] === 'd') return side === 'home' ? H.score : A.score;
+    if (key.startsWith('t25')) return sum(H.score, A.score);
+    if (key === 'y') return sum(H.y, A.y);
+    if (key === 'y1') return sum(H.y1, A.y1);
+    if (key === 'c') return sum(H.c, A.c);
+    if (key === 'c1') return sum(H.c1, A.c1);
+    return null;
+  }
+
   // { res: 'win' | 'loss' | 'void' | null, v } — null: результату ще немає або немає даних; 'cancel' — матч скасовано.
+  // Усі ставки — «більше», тож коли під час матчу лінію вже перевищено, ставка виграла достроково (early),
+  // не чекаючи кінця матчу. Лише в основний час: у додатковий рахунок уже не 90-хвилинний.
   function settle(b, ev) {
     if (!ev) return null;
     if (VOID.test(ev.status || '')) return { res: 'cancel' };
+    if (ev.state === 'in') {
+      if (ev.period > 2 && !/^y/.test(b.key)) return null;
+      const v = valueOf(b.key, b.side, ev);
+      if (v == null) return null;
+      const note = `достроково${ev.clock ? `, ${ev.clock}` : ''}`;
+      if (v > b.line) return { res: 'win', v, early: true, note };
+      // ЖК 1-го тайму: у 2-му таймі результат уже остаточний (картки з хвилиною з протоколу).
+      if (b.key === 'y1' && ev.period >= 2) return { res: v === b.line ? 'void' : 'loss', v, early: true, note };
+      return null;
+    }
     if (!G.isResult(ev)) return null;
-    const H = ev.home, A = ev.away, extra = EXTRA.test(ev.status || '');
-    const sum = (a, c) => (a == null || c == null ? null : a + c);
-    let v = null;
-    if (extra && !/^y/.test(b.key)) return { res: 'void', v: null, note: 'додатковий час' };   // рахунок 90 хв невідомий
-    if (b.key[0] === 'd') v = b.side === 'home' ? H.score : A.score;
-    else if (b.key.startsWith('t25')) v = H.score + A.score;
-    else if (b.key === 'y') v = sum(H.y, A.y);
-    else if (b.key === 'y1') v = sum(H.y1, A.y1);
-    else if (b.key === 'c') v = sum(H.c, A.c) || null;   // 0 кутових у сумі — даних немає
-    else if (b.key === 'c1') v = sum(H.c1, A.c1);
+    if (EXTRA.test(ev.status || '') && !/^y/.test(b.key)) return { res: 'void', v: null, note: 'додатковий час' };   // рахунок 90 хв невідомий
+    let v = valueOf(b.key, b.side, ev);
+    if (b.key === 'c' && v === 0) v = null;   // 0 кутових у сумі — даних немає
     if (v == null) return null;
     return { res: v > b.line ? 'win' : v === b.line ? 'void' : 'loss', v };
+  }
+
+  // Стан матчу, що йде (для моніторингу): рахунок, хвилина, кутові й картки обох команд.
+  const sideLive = t => ({ id: t.id, name: t.name, score: t.score, c: t.c ?? null, y: t.y ?? null, y1: t.y1 ?? null, c1: t.c1 ?? null });
+  const liveOf = ev => ({ id: ev.id, state: ev.state, status: ev.status, clock: ev.clock || '', period: ev.period || 0, home: sideLive(ev.home), away: sideLive(ev.away) });
+
+  // Рекомендації на матчі, що вже почались: беремо з попереднього знімка (лінії VBET на них уже немає) і
+  // лишаємо, поки матч не закінчився, з поточним станом. Після кінця матчу ставка — у статистиці.
+  function liveRows(prev, seasons, now = Date.now() / 1000, fresh = new Map()) {
+    const evById = new Map();
+    for (const s of seasons) for (const e of s.events) evById.set(e.id, e);
+    const out = [];
+    for (const r of prev || []) {
+      if (r.ev.ts > now || now - r.ev.ts > 4 * 3600) continue;
+      const ev = fresh.get(r.ev.id) || evById.get(r.ev.id);
+      if (!ev || ev.state === 'post' || VOID.test(ev.status || '')) continue;
+      out.push({ ...r, live: liveOf(ev) });
+    }
+    return out;
+  }
+
+  // Матчі, за якими треба стежити зараз: почались (до 4 год тому) і мають ставку без результату або рядок рекомендації.
+  function liveNeeds(bets, rows, now = Date.now() / 1000) {
+    const out = new Map();
+    const add = (id, slug, ts, c1) => {
+      if (ts > now + 60 || now - ts > 4 * 3600) return;
+      const x = out.get(id) || { id, slug, ts, c1: false };
+      x.c1 = x.c1 || c1;
+      out.set(id, x);
+    };
+    for (const b of bets) if (!b.res) add(b.ev, b.slug, b.ts, b.key === 'c1');
+    for (const r of rows || []) add(r.ev.id, r.ev.slug, r.ev.ts, r.bets.some(c => c.key === 'c1' && c.ok));
+    return [...out.values()];
   }
 
   // Матчі, для яких потрібні кутові 1-го тайму (коментар ESPN — окремий запит на кожен матч): 2 останні зіграні
@@ -300,9 +351,10 @@ FP.engine = (() => {
   // ---------- серверний журнал ----------
   // Ставки записуються до початку матчу й оновлюються (кф, ймовірність) до самого старту. Після матчу —
   // розрахунок. Якщо до старту матч перестав підходити (кф упав нижче 1.49, серія змінилась) — запис видаляється.
-  function updateJournal(journal, res, seasons, now = Date.now() / 1000) {
+  function updateJournal(journal, res, seasons, now = Date.now() / 1000, fresh = new Map()) {
     const evById = new Map();
     for (const s of seasons) for (const e of s.events) evById.set(e.id, e);
+    for (const [id, e] of fresh) evById.set(id, e);   // свіжі дані матчів, що йдуть
     const live = new Map(res.bets.map(b => [b.id, b]));
     const evaluated = new Set(res.evaluated), keep = new Set(res.keep);
     for (const b of res.bets) {
@@ -322,9 +374,10 @@ FP.engine = (() => {
       }
       const s = settle(b, ev);
       if (s && s.res === 'cancel') { delete journal.bets[id]; continue; }
-      if (s && s.res) Object.assign(b, { res: s.res, v: s.v }, s.note ? { note: s.note } : {});
+      if (s && s.res) Object.assign(b, { res: s.res, v: s.v, settled: Math.round(now) }, s.note ? { note: s.note } : {}, s.early ? { early: true } : {});
       else if (now - b.ts > 3 * 86400) Object.assign(b, { res: 'void', v: null, note: 'немає даних' });
-      if (b.res) b.profit = Math.round(profit(b) * 100) / 100;
+      if (b.res) { b.profit = Math.round(profit(b) * 100) / 100; delete b.live; }
+      else if (ev && ev.state === 'in') b.live = { clock: ev.clock || '', v: valueOf(b.key, b.side, ev) };
     }
     return journal;
   }
@@ -354,5 +407,5 @@ FP.engine = (() => {
     return out;
   }
 
-  return { analyze, settle, profit, updateJournal, streams, halfCornerNeeds, MARKETS, MARKET };
+  return { analyze, settle, valueOf, liveOf, liveRows, liveNeeds, profit, updateJournal, streams, halfCornerNeeds, MARKETS, MARKET };
 })();
