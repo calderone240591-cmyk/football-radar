@@ -1,0 +1,59 @@
+# Серверний журнал: рекомендації з кф VBET до початку матчів і розрахунок зіграних (tools/record.js).
+# Один запуск — 6 проходів з паузою 9 хв (≈ 55 хв), наприкінці запускає наступний, тож журнал
+# оновлюється приблизно кожні 10 хвилин цілодобово. Розклад — запасний варіант, якщо ланцюжок перерветься.
+name: Журнал
+
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: journal
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      TZ: Europe/Kyiv
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: journal
+          path: journal
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Минулі місяці ESPN не змінюються — тримаємо їх між запусками.
+      - uses: actions/cache@v4
+        with:
+          path: espn-cache.json
+          key: espn-${{ github.run_id }}
+          restore-keys: espn-
+      - name: Record
+        working-directory: journal
+        env:
+          PUBLISH: '1'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          node ../tools/record.js . ../espn-cache.json 6 540
+      - name: Next run
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Не ставимо в чергу, якщо наступний запуск уже чекає.
+          waiting=0
+          for s in queued pending waiting; do
+            n=$(gh run list -R "$GITHUB_REPOSITORY" --workflow journal.yml --status $s --json databaseId --jq 'length' || echo 0)
+            waiting=$((waiting + n))
+          done
+          if [ "$waiting" = "0" ]; then gh workflow run journal.yml --ref main -R "$GITHUB_REPOSITORY"; fi
