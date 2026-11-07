@@ -55,10 +55,12 @@
     }
   }
 
-  // Знімок рекомендацій: свіжіший із серверного та порахованого на пристрої.
+  // Знімок рекомендацій: свіжіший із серверного та порахованого на пристрої. Пораховане на пристрої
+  // без лінії VBET (не відповів) не замінює серверний знімок — у ньому не було б жодної рекомендації.
   const snapshot = () => {
     const s = state.journal && state.journal.snapshot;
-    if (state.local && (!s || state.local.at > s.at)) return state.local;
+    const l = state.local;
+    if (l && (!s || (l.at > s.at && !(l.vbet && l.vbet.error)))) return l;
     return s || null;
   };
   const stale = () => { const s = snapshot(); return !s || nowS() - s.at > STALE; };
@@ -91,7 +93,7 @@
       if (state.journal) render();
       state.journal = (await fetchJournal()) || state.journal;
       render();
-      if (stale() || force === 'local') { await computeLocal(); render(); }
+      if (stale() || force === 'local' || /[?&]local\b/.test(location.search)) { await computeLocal(); render(); }
     })().finally(() => { state.loading = null; });
     return state.loading;
   }

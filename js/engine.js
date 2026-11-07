@@ -45,6 +45,27 @@ FP.engine = (() => {
   function analyze(seasons, bookOf, now = Date.now() / 1000) {
     const bySlug = new Map(seasons.map(s => [s.comp.slug, s]));
 
+    // ---------- якість даних ----------
+    // Де ESPN не веде кутові чи картки, він віддає нулі. Якщо в турнірі понад 10% матчів з 0 кутових
+    // (або понад 20% без жовтих — у Нідерландах справді ≈ 10%) — таких даних там немає. Матч з 0 кутових
+    // у сумі теж вважаємо неповним (насправді так майже не буває).
+    const okFacts = new Map();
+    for (const s of seasons) {
+      let nc = 0, zc = 0, ny = 0, zy = 0;
+      for (const e of s.events) {
+        if (!G.isResult(e)) continue;
+        if (e.home.c != null && e.away.c != null) { nc++; if (e.home.c + e.away.c === 0) zc++; }
+        if (e.home.y != null && e.away.y != null) { ny++; if (e.home.y + e.away.y === 0) zy++; }
+      }
+      okFacts.set(s.comp.slug, { c: nc < 10 || zc / nc <= 0.1, y: ny < 10 || zy / ny <= 0.2 });
+    }
+    const factsOf = (slug, e) => {
+      const q = okFacts.get(slug) || { c: true, y: true };
+      const c = q.c && e.home.c != null && e.away.c != null && e.home.c + e.away.c > 0;
+      const y = q.y && e.home.y != null && e.away.y != null;
+      return { c, y };
+    };
+
     // ---------- усі матчі кожної команди за часом ----------
     const seen = new Set(), games = new Map(), all = [];
     for (const s of seasons) {
@@ -53,11 +74,13 @@ FP.engine = (() => {
         seen.add(e.id);
         if (cur) all.push({ slug: s.comp.slug, ev: e });
         if (!G.isResult(e) || VOID.test(e.status || '')) continue;
+        const f = cur ? factsOf(s.comp.slug, e) : { c: false, y: false };
         for (const [me, op] of [[e.home, e.away], [e.away, e.home]]) {
           if (!games.has(me.id)) games.set(me.id, []);
           games.get(me.id).push({
             ts: e.ts, cur, slug: s.comp.slug, opp: op.id, oppName: op.short || op.name, g: me.score, ga: op.score,
-            c: me.c ?? null, ca: op.c ?? null, y: me.y ?? null, ya: op.y ?? null, y1: me.y1 ?? null, y1a: op.y1 ?? null,
+            c: f.c ? me.c : null, ca: f.c ? op.c : null,
+            y: f.y ? me.y : null, ya: f.y ? op.y : null, y1: f.y ? me.y1 : null, y1a: f.y ? op.y1 : null,
           });
         }
       }
@@ -235,7 +258,7 @@ FP.engine = (() => {
     else if (b.key.startsWith('t25')) v = H.score + A.score;
     else if (b.key === 'y') v = sum(H.y, A.y);
     else if (b.key === 'y1') v = sum(H.y1, A.y1);
-    else if (b.key === 'c') v = sum(H.c, A.c);
+    else if (b.key === 'c') v = sum(H.c, A.c) || null;   // 0 кутових у сумі — даних немає
     if (v == null) return null;
     return { res: v > b.line ? 'win' : v === b.line ? 'void' : 'loss', v };
   }
