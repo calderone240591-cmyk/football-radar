@@ -1,6 +1,6 @@
 // Офлайн-оболонка. Власні файли — спершу мережа (оновлення приходять одразу), без мережі — кеш.
 // Дані (ESPN, VBET, журнал) тут не кешуються — ними керують js/api.js і js/app.js.
-const VERSION = 'fr-v5';
+const VERSION = 'fr-v6';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/config.js', 'js/store.js', 'js/api.js', 'js/vbet.js', 'js/goals.js', 'js/engine.js', 'js/app.js',

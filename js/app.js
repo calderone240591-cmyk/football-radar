@@ -162,14 +162,24 @@
     const extra = state.local ? state.local.bets.filter(b => !ids.has(b.id) && b.ts > nowS() && b.ts >= CFG.STATS_FROM).map(b => ({ ...b, res: null, local: true })) : [];
     return j.concat(extra);
   }
+  // Окрема статистика «★ Золоті»: усі ставки всіх ринків з перевагою від 0% (ймовірність × кф ≥ 1)
+  // за останнім кф перед матчем. Ті самі ставки лишаються й у статистиках своїх ринків.
+  const GOLD = { key: 'gold', tab: 'gold', label: '★ Золоті ставки' };
+  const isGold = b => b.p != null && b.odds != null && b.p * b.odds >= 1;
   function byMarket() {
     const out = new Map(engine.MARKETS.map(m => [m.key, []]));
-    for (const b of allBets()) if (out.has(b.key) && b.ts >= CFG.STATS_FROM) out.get(b.key).push(b);
+    out.set('gold', []);
+    for (const b of allBets()) {
+      if (!out.has(b.key) || b.ts < CFG.STATS_FROM) continue;
+      out.get(b.key).push(b);
+      if (isGold(b)) out.get('gold').push(b);
+    }
     return out;
   }
+  // Номер статистики ставки в її ринку (С1, С2…) — без «золотої».
   function streamIndex() {
     const idx = new Map();
-    for (const list of byMarket().values()) for (const s of engine.streams(list)) for (const b of s.bets) idx.set(b.id, s.no);
+    for (const [k, list] of byMarket()) if (k !== 'gold') for (const s of engine.streams(list)) for (const b of s.bets) idx.set(b.id, s.no);
     return idx;
   }
 
@@ -449,7 +459,13 @@
     tot: 'Ймовірність: очікувані голи обох команд з моделі, підігнані під кф VBET на результат і тотал (70% ринок + 30% модель), розподіл рахунків Пуассона з поправкою Діксона–Коулза.',
     card: 'Ймовірність: середні сезону обох команд (скільки отримують / подають і скільки дають суперникам), від\'ємний біноміальний розподіл; якщо VBET дає обидві сторони лінії — 70% ринок (без маржі) + 30% модель.',
   };
+  DESC.gold = { short: 'усі ставки з усіх ринків з ★ — перевага від 0% (ймовірність × кф ≥ 1)' };
+  const goldCard = () => `<section class="card desc"><h3>Що це за статистика</h3>
+      <p><b>Які ставки.</b> Усі рекомендації з усіх 10 ринків (сухі, тотали, картки й кутові), позначені ★ і золотим: перевага від 0%, тобто ймовірність × кф ≥ 1 — за моделлю ставка не в мінусі. Рахується за останнім кф і ймовірністю перед початком матчу: якщо кф до старту впав і перевага стала від'ємною, ставка сюди не потрапляє (і навпаки).</p>
+      <p><b>Навіщо.</b> Перевірити, чи справді ставки з ★ приносять більше, ніж усі підряд. Ті самі ставки лишаються й у статистиках своїх ринків.</p>
+      <p><b>Паралельні статистики.</b> Як і всюди: матчі, що починаються ближче ніж за 2 год, ідуть у різні статистики (С1, С2…). Дві золоті ставки на один матч (наприклад, ІТБ і ЖК) теж ідуть у різні статистики. Кожна — банк ${money(CFG.BANK)}, ставка ${CFG.STAKE} грн.</p></section>`;
   const descCard = m => {
+    if (m.key === 'gold') return goldCard();
     const d = DESC[m.key];
     return `<section class="card desc"><h3>Що це за ставка</h3>
       <p><b>Умова.</b> ${d.cond}</p><p><b>Ставка.</b> ${d.bet}</p><p><b>Розрахунок.</b> ${d.settle}</p>
@@ -473,7 +489,7 @@
         <td>${s.hit != null ? `<b>${pct(s.hit)}</b><small>очік. ${pct(s.exp)}</small>` : '—'}</td>
         <td class="${s.profit > 0 ? 'ok' : s.profit < 0 ? 'bad' : ''}">${s.n ? `${uah(s.profit)}<small>ROI ${Math.round(s.roi * 100)}%</small>` : '—'}</td></tr>`;
     };
-    const total = summaryOf([...groups.values()].flat());
+    const total = summaryOf([...groups].filter(([k]) => k !== 'gold').flatMap(([, l]) => l));
     $view.innerHTML = `${banner()}
       <p class="summary">Облік з ${dateOf(CFG.STATS_FROM)} · кожна статистика — банк <b>${money(CFG.BANK)}</b>, ставка <b>${CFG.STAKE} грн</b> на матч, кф VBET до початку матчу</p>
       <div class="kpis">
@@ -481,6 +497,9 @@
         <div><b>${total.hit != null ? pct(total.hit) : '—'}</b><span>влучність<br>очікувана ${pct(total.exp)}</span></div>
         <div><b class="${total.profit > 0 ? 'ok' : total.profit < 0 ? 'bad' : ''}">${total.n ? uah(total.profit) : '—'}</b><span>разом<br>ROI ${total.roi != null ? Math.round(total.roi * 100) + '%' : '—'}</span></div>
       </div>
+      <section class="card top"><h3>★ Золоті ставки</h3><div class="tw"><table class="grid stats">
+        <thead><tr><th>Ринок</th><th>В/П/Пов</th><th>Влучність</th><th>Прибуток</th></tr></thead>
+        <tbody>${row(GOLD)}</tbody></table></div></section>
       ${TABS.map(([tab, title]) => `<section class="card"><h3>${title}</h3><div class="tw"><table class="grid stats">
         <thead><tr><th>Ринок</th><th>В/П/Пов</th><th>Влучність</th><th>Прибуток</th></tr></thead>
         <tbody>${engine.MARKETS.filter(m => m.tab === tab).map(row).join('')}</tbody></table></div></section>`).join('')}
@@ -502,7 +521,7 @@
   }
 
   function renderStat(key) {
-    const m = MK.get(key);
+    const m = key === 'gold' ? GOLD : MK.get(key);
     if (!m) { location.hash = '#/stats'; return; }
     setHeader(m.label, 'stats');
     const list = byMarket().get(key);
@@ -524,7 +543,12 @@
       const v = e && e.state === 'in' ? engine.valueOf(b.key, b.side, e) : b.live ? b.live.v : null;
       return `<small class="livel">${clock ? `● ${esc(clock)}` : 'іде / розрахунок'}${v != null ? ` · зараз ${v}, треба ${need(b.line)}` : ''}</small>`;
     };
-    const betRow = b => `<tr><td class="m"><b class="t">${dateOf(b.ts)} ${timeOf(b.ts)}</b> ${match(b)}<small>${esc(league(b.slug).short)} · С${no.get(b.id) || '?'}${b.n ? ` · без гола ${b.n}` : ''}</small></td>
+    // У «золотій» статистиці ставки різних ринків — показуємо, яка саме.
+    const what = b => {
+      const bm = MK.get(b.key);
+      return bm.tab === 'card' ? `${bm.label} ТБ ${lineTxt(b.line)}` : bm.label;
+    };
+    const betRow = b => `<tr><td class="m"><b class="t">${dateOf(b.ts)} ${timeOf(b.ts)}</b> ${match(b)}${m.key === 'gold' ? `<small><b class="pick">${esc(what(b))}</b></small>` : ''}<small>${esc(league(b.slug).short)} · С${no.get(b.id) || '?'}${b.n ? ` · без гола ${b.n}` : ''}${m.key === 'gold' ? ` · перевага +${Math.round((b.p * b.odds - 1) * 100)}%` : ''}</small></td>
           <td>${m.tab === 'card' ? `ТБ ${lineTxt(b.line)} · ` : ''}<b>${k2(b.odds)}</b><small>${pct(b.p)}</small></td>
           <td class="${b.res === 'win' ? 'ok' : b.res === 'loss' ? 'bad' : ''}">${b.res ? `${ICON[b.res]} ${b.res === 'void' ? '0 грн' : uah(b.profit ?? engine.profit(b))}<small>${b.v != null ? `факт ${b.v}` : ''}${b.v != null && b.note ? ' · ' : ''}${esc(b.note || '')}</small>` : b.ts > now ? '<small>очікує</small>' : liveTxt(b)}</td></tr>`;
     const betTable = (title, l) => (l.length ? `<section class="card"><h3>${title} · ${l.length}</h3><div class="tw"><table class="grid bets">
