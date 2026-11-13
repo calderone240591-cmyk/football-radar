@@ -8,7 +8,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Футбол Радар">
-  <meta name="description" content="Сухі матчі, тотали, картки й кутові: рекомендації з кф VBET і статистика">
+  <meta name="description" content="Засуха (команди без гола) і тотали (матчі без ТБ 1.5) у всіх чемпіонатах: рекомендації з кф VBET, ймовірність і статистика">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
@@ -29,15 +29,11 @@
   <nav class="tabbar">
     <a href="#/" data-tab="dry">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 8l8 8"/></svg>
-      <span>Сухі</span>
+      <span>Засуха</span>
     </a>
-    <a href="#/tot" data-tab="tot">
+    <a href="#/low" data-tab="low">
       <svg viewBox="0 0 24 24"><path d="M4 18l5-6 4 3 7-9"/><path d="M4 21h16"/></svg>
       <span>Тотали</span>
-    </a>
-    <a href="#/card" data-tab="card">
-      <svg viewBox="0 0 24 24"><rect x="5" y="3" width="10" height="14" rx="1.5"/><path d="M19 7v14H9"/></svg>
-      <span>Картки й кутові</span>
     </a>
     <a href="#/stats" data-tab="stats">
       <svg viewBox="0 0 24 24"><path d="M4 19V10M10 19V5M16 19v-7M22 19H2"/></svg>

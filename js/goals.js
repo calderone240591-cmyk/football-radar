@@ -1,29 +1,26 @@
 // Модель голів.
-// 1. Рейтинги атаки й оборони з результатів сезону з урахуванням сили суперників; свіжі матчі важать
-//    більше, минулий сезон — з меншою вагою. У єврокубках відправна точка — рейтинг у своєму чемпіонаті
-//    з поправкою на силу чемпіонату.
+// 1. Рейтинги атаки й оборони кожної команди за всіма її матчами в усіх турнірах (≈ 150 днів) з урахуванням
+//    сили суперників; свіжі матчі важать більше. Турніри пов'язані між собою єврокубками, кубками й
+//    матчами збірних, тож рейтинги порівнювані.
 // 2. Очікувані голи → Пуассон з поправкою Діксона–Коулза.
 // 3. Якщо є кф VBET на результат і тотал, очікувані голи підганяються під суміш 70% ринок + 30% модель:
 //    ринок враховує склади й новини, яких модель не бачить.
 FP.goals = (() => {
   const PRIOR_GAMES = 4;
-  const CUP_PRIOR_GAMES = 6;
-  const HALF_LIFE_DAYS = 120;
+  const HALF_LIFE_DAYS = 90;
   const RHO = -0.08;
   const MAX_GOALS = 10;
   const MARKET_WEIGHT = 0.7;
-  // Калібрування за бектестом (1091 матч): модель недооцінювала голи господарів і гостей.
+  // Калібрування за бектестом: модель недооцінювала голи господарів і гостей.
   const TUNE = { home: 1.06, away: 1.12 };
 
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
   const isResult = e => e.state === 'post' && e.completed && e.home.score != null && e.away.score != null;
 
   // ---------- рейтинги ----------
-  function fit(events, previous, prior, priorGames, normalize, asOf) {
+  function fit(events, asOf) {
     const now = asOf || Date.now() / 1000;
-    const current = new Set();
-    for (const e of events) { current.add(e.home.id); current.add(e.away.id); }
-    const matches = events.concat(previous || []).filter(isResult).map(e => ({
+    const matches = events.filter(isResult).map(e => ({
       h: e.home.id, a: e.away.id, hg: e.home.score, ag: e.away.score,
       w: Math.pow(0.5, Math.max(0, now - e.ts) / 86400 / HALF_LIFE_DAYS),
     }));
@@ -33,13 +30,12 @@ FP.goals = (() => {
     const avgA = (sa + 1.15 * 15) / (sw + 15);
     const avgG = (avgH + avgA) / 2;
 
-    const ids = new Set(current);
+    const ids = new Set();
     for (const m of matches) { ids.add(m.h); ids.add(m.a); }
-    const p0 = new Map([...ids].map(id => [id, (prior && prior(id)) || { att: 1, def: 1 }]));
-    const att = new Map([...ids].map(id => [id, p0.get(id).att]));
-    const def = new Map([...ids].map(id => [id, p0.get(id).def]));
-    const kk = priorGames * avgG;
-    const mean = (m, only) => { let s = 0, n = 0; for (const [k, v] of m) if (only.has(k)) { s += v; n++; } return n ? s / n : 1; };
+    const att = new Map([...ids].map(id => [id, 1]));
+    const def = new Map([...ids].map(id => [id, 1]));
+    const kk = PRIOR_GAMES * avgG;
+    const mean = m => { let s = 0, n = 0; for (const v of m.values()) { s += v; n++; } return n ? s / n : 1; };
 
     for (let it = 0; it < 25; it++) {
       const acc = new Map([...ids].map(id => [id, { gf: 0, ef: 0, ga: 0, ea: 0 }]));
@@ -51,16 +47,14 @@ FP.goals = (() => {
         A.ga += m.w * m.hg; A.ea += m.w * avgH * att.get(m.h);
       }
       for (const id of ids) {
-        const x = acc.get(id), p = p0.get(id);
-        att.set(id, (x.gf + kk * p.att) / (x.ef + kk));
-        def.set(id, (x.ga + kk * p.def) / (x.ea + kk));
+        const x = acc.get(id);
+        att.set(id, (x.gf + kk) / (x.ef + kk));
+        def.set(id, (x.ga + kk) / (x.ea + kk));
       }
-      if (normalize) {
-        const ma = mean(att, current), md = mean(def, current);
-        for (const id of ids) { att.set(id, att.get(id) / ma); def.set(id, def.get(id) / md); }
-      }
+      const ma = mean(att), md = mean(def);
+      for (const id of ids) { att.set(id, att.get(id) / ma); def.set(id, def.get(id) / md); }
     }
-    return { avgH, avgA, att, def, current };
+    return { avgH, avgA, att, def, ids };
   }
 
   // Форма за останні 5 матчів відносно середнього рівня команди: до ±6% до голів.
@@ -83,26 +77,13 @@ FP.goals = (() => {
     return factor;
   }
 
-  // league — запис з FP.LEAGUES; domestic — Map id → { att, def, q } з рейтингів чемпіонатів (для єврокубків).
-  function build(league, events, domestic, previous) {
-    let prior = null;
-    if (league.cup) {
-      prior = id => {
-        const d = domestic && domestic.get(id);
-        const rel = (d ? d.q : FP.UNKNOWN_Q) / FP.CUP_Q;
-        return d ? { att: d.att * rel, def: d.def / rel } : { att: rel, def: 1 / rel };
-      };
-    } else if (previous && previous.length) {
-      // Команди, яких не було в лізі минулого сезону, переважно піднялися з нижчого дивізіону.
-      const before = new Set();
-      for (const e of previous) { before.add(e.home.id); before.add(e.away.id); }
-      prior = id => (before.has(id) ? null : { att: 0.85, def: 1.15 });
-    }
-    const f = fit(events, league.cup ? null : previous, prior, league.cup ? CUP_PRIOR_GAMES : PRIOR_GAMES, !league.cup);
+  // Одна модель на всі турніри. events — за часом.
+  function build(events, asOf) {
+    const f = fit(events, asOf);
     const form = forms(events);
     const teams = new Map();
-    for (const id of f.current) teams.set(id, { id, att: f.att.get(id), def: f.def.get(id), form: form.get(id) || 1 });
-    return { league, avgH: f.avgH, avgA: f.avgA, teams };
+    for (const id of f.ids) teams.set(id, { id, att: f.att.get(id), def: f.def.get(id), form: form.get(id) || 1 });
+    return { avgH: f.avgH, avgA: f.avgA, teams };
   }
 
   // ---------- розподіли ----------
@@ -112,22 +93,11 @@ FP.goals = (() => {
     return out;
   }
 
-  // Від'ємний біноміальний розподіл із середнім mean і дисперсією mean × disp (disp > 1).
-  function negBinPmf(mean, disp, max) {
-    if (disp <= 1.0001) return poissonPmf(mean, max);
-    const r = mean / (disp - 1);
-    const q = r / (r + mean);
-    const out = [Math.pow(q, r)];
-    for (let k = 1; k <= max; k++) out.push(out[k - 1] * (k - 1 + r) / k * (1 - q));
-    return out;
-  }
-
-  // Ймовірність «більше line» без урахування повернень: P(виграш) / (1 − P(повернення)).
+  // Ймовірність «більше line» (лінії .5 — без повернень).
   function overProb(pmf, line) {
-    let win = 0, push = 0, sum = 0;
-    pmf.forEach((v, k) => { sum += v; if (k > line) win += v; else if (k === line) push += v; });
-    win += Math.max(0, 1 - sum);   // хвіст за межею таблиці
-    return push > 0 ? win / (1 - push) : win;
+    let win = 0, sum = 0;
+    pmf.forEach((v, k) => { sum += v; if (k > line) win += v; });
+    return win + Math.max(0, 1 - sum);   // хвіст за межею таблиці
   }
 
   function tau(h, a, lh, la) {
@@ -195,10 +165,11 @@ FP.goals = (() => {
     return out;
   }
 
-  // Очікувані голи господарів і гостей { lh, la, model: { lh, la } } або null.
+  // Очікувані голи господарів і гостей { lh, la, model: { lh, la }, market } або null.
+  // Команда без зіграних матчів в історії — середнього рівня.
+  const AVG = { att: 1, def: 1, form: 1 };
   function lambdas(m, ev, book) {
-    const H = m.teams.get(ev.home.id), A = m.teams.get(ev.away.id);
-    if (!H || !A) return null;
+    const H = m.teams.get(ev.home.id) || AVG, A = m.teams.get(ev.away.id) || AVG;
     const mlh = clamp(m.avgH * H.att * A.def * H.form * TUNE.home, 0.15, 4.5);
     const mla = clamp(m.avgA * A.att * H.def * A.form * TUNE.away, 0.15, 4.5);
     const market = marketProbs(book);
@@ -221,5 +192,5 @@ FP.goals = (() => {
     return p;
   };
 
-  return { build, lambdas, totalOver, poissonPmf, negBinPmf, overProb, isResult, MARKET_WEIGHT };
+  return { build, lambdas, totalOver, poissonPmf, overProb, isResult, MARKET_WEIGHT };
 })();

@@ -37,12 +37,13 @@ const git = cmd => execSync(`git ${cmd}`, { cwd: DIR, stdio: 'pipe' }).toString(
 
 function saveCache() {
   if (!CACHE) return;
-  // Лише минулі місяці й минулі сезони — вони не змінюються.
-  const d = new Date(), cur = `${d.getFullYear()}${FP.pad(d.getMonth() + 1)}`;
+  // Лише завершені дні (вони не змінюються) і список турнірів; старші за історію — геть.
+  const oldest = new Date(Date.now() - (CFG.HISTORY_DAYS + 2) * 86400 * 1000);
+  const min = `${oldest.getUTCFullYear()}${FP.pad(oldest.getUTCMonth() + 1)}${FP.pad(oldest.getUTCDate())}`;
   const keep = {};
   for (const [k, v] of kv) {
-    const m = /^m2:.+:(\d{6})$/.exec(k);
-    if (/^(pm2|c1):/.test(k) || (m && m[1] < cur)) keep[k] = v;
+    const m = /^d:(\d{8})$/.exec(k);
+    if (k === 'lg' || (m && v.final && m[1] >= min)) keep[k] = v;
   }
   fs.writeFileSync(CACHE, JSON.stringify(keep));
 }
@@ -53,29 +54,22 @@ async function once() {
   if (fs.existsSync(FILE)) { try { journal = JSON.parse(fs.readFileSync(FILE, 'utf8')); } catch {} }
   if (journal.version !== CFG.VERSION || !journal.bets) journal = { version: CFG.VERSION, bets: {} };
 
-  const { seasons, errors } = await api.allSeasons(false);
-  const pendingC1 = Object.values(journal.bets).filter(b => b.key === 'c1' && !b.res).map(b => b.ev);
-  await api.addHalfCorners(engine.halfCornerNeeds(seasons, now, pendingC1));
-
-  // Матчі, що йдуть: свіжий рахунок, кутові й картки (і кутові 1-го тайму з коментаря) — для дострокового
-  // розрахунку ставок і моніторингу в рекомендаціях.
-  const prevRows = (journal.snapshot && journal.snapshot.rows) || [];
-  const fresh = await api.live(engine.liveNeeds(Object.values(journal.bets), prevRows, now));
-  for (const s of seasons) s.events = s.events.map(e => fresh.get(e.id) || e);
-
+  // Останні дні перезавантажуються щоразу — у них і матчі, що йдуть (рахунок для дострокового розрахунку).
+  const { events, errors, days } = await api.history(false);
   await vbet.load(true);
   const vb = vbet.status();
-  const res = engine.analyze(seasons, vbet.book, now);
-  engine.updateJournal(journal, res, seasons, now, fresh);
-  res.rows = res.rows.concat(engine.liveRows(prevRows, seasons, now, fresh));
+  const res = engine.analyze(events, vbet.book, now);
+  engine.updateJournal(journal, res, events, now);
+  const prevRows = (journal.snapshot && journal.snapshot.rows) || [];
+  res.rows = res.rows.concat(engine.liveRows(prevRows, events, now));
 
   const { bets, evaluated, keep, ...snapshot } = res;
   journal.updatedAt = new Date().toISOString();
-  journal.snapshot = { ...snapshot, errors, vbet: { games: vb.games, error: vb.error } };
+  journal.snapshot = { ...snapshot, errors, events: events.length, vbet: { games: vb.games, error: vb.error, matched: evaluated.length } };
   fs.writeFileSync(FILE, JSON.stringify(journal));
 
   const all = Object.values(journal.bets);
-  console.log(`${new Date().toISOString()} VBET: ${vb.error || `${vb.games} games`} · leagues failed: ${errors} · rows: ${res.rows.length} · bets now: ${bets.length} · journal: ${all.length} (settled ${all.filter(b => b.res).length})`);
+  console.log(`${new Date().toISOString()} ESPN: ${events.length} matches, ${days} days (failed ${errors}) · VBET: ${vb.error || `${vb.games} games, matched ${evaluated.length}`} · rows: ${res.rows.length} · dry teams ${res.dry.length} · low teams ${res.low.length} · bets now: ${bets.length} · journal: ${all.length} (settled ${all.filter(b => b.res).length})`);
 
   if (PUBLISH) {
     git('add journal.json');
