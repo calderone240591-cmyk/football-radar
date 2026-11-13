@@ -98,7 +98,7 @@
   const journalBets = () => (state.journal ? Object.values(state.journal.bets) : []);
   // Ставка без результату, що вже зайшла під час матчу (дані ESPN на пристрої), — виграна достроково.
   function allBets() {
-    return journalBets().filter(b => b.ts >= CFG.STATS_FROM).map(b => {
+    return journalBets().filter(b => b.ts >= CFG.STATS_FROM && b.odds >= CFG.MIN_ODDS).map(b => {
       if (b.res || b.ts > nowS()) return b;
       const e = state.live.get(b.ev);
       const s = e && e.state === 'in' ? engine.settle(b, e) : null;
@@ -147,7 +147,8 @@
       if (x.res === 'void') return `<td class="c"><b>↺</b><small>повернення</small></td>`;
       return `<td class="c ok"><b>${x.v ?? '?'}</b><small>треба ${need(c.line)}</small><em>${star(c)}кф ${k2(c.odds)}</em></td>`;
     }
-    if (!c.odds) return `<td class="c none"><span>немає в лінії</span><small class="lo">${pct(c.p)}</small></td>`;
+    if (c.low) return `<td class="c skip">—</td>`;   // кф нижче 1.35 — не рекомендація
+    if (!c.odds) return `<td class="c none"><span>немає в лінії</span></td>`;
     return `<td class="c ok ${c.top ? 'top' : ''}"><b>${k2(c.odds)}</b><small class="${pClass(c.p)}">${pct(c.p)}</small>${c.top ? '<em><span class="star">★</span> топ</em>' : ''}</td>`;
   }
 
@@ -196,7 +197,7 @@
       <tbody>${list.map(({ r, c }, i) => `<tr><td class="m"><b class="t">${i + 1}. ${when(r.ev.ts)}</b> ${esc(r.ev.home.short)} – ${esc(r.ev.away.short)}
           <small><b class="pick">${betName(r, c)}</b> · ${r.type === 'dry' ? `${seriesTxt(r.n, r.capped)} без гола` : `серія ТМ 1.5: ${r.n}`} · ${esc(r.ev.league)}</small></td>
           <td><b>${k2(c.odds)}</b></td><td><b class="${pClass(c.p)}">${pct(c.p)}</b></td></tr>`).join('')}</tbody></table></div>
-      ${hint('Найімовірніші рекомендації з обох вкладок (лише з кф VBET). Ставки, що були в топі на момент початку матчу, ідуть в окрему статистику «Топ».')}</section>`;
+      ${hint('Найімовірніші рекомендації з обох вкладок (лише з кф VBET від ' + CFG.MIN_ODDS + '). Ставки, що були в топі на момент початку матчу, ідуть в окрему статистику «Топ».')}</section>`;
   }
 
   // Матчі, що вже йдуть, і майбутні — групами за довжиною серії (найдовша першою), у групі — за часом.
@@ -236,9 +237,9 @@
     const rows = s.rows.filter(r => r.type === 'dry' && !isStarted(r));
     const head = `<thead><tr><th>Матч · команда без гола</th>${engine.MARKETS.filter(m => m.tab === 'dry').map(m => `<th>${m.label}</th>`).join('')}</tr></thead>`;
     $view.innerHTML = `${banner()}
-      <p class="summary">Не забивають ${CFG.DRY_MIN}+ матчі поспіль: <b>${nTeams(s.dry.length)}</b> · грають найближчі 3 дні: <b>${rows.length}</b> · з кф VBET: <b>${rows.filter(r => r.bets.some(c => c.odds)).length}</b></p>
+      <p class="summary">Не забивають ${CFG.DRY_MIN}+ матчі поспіль: <b>${nTeams(s.dry.length)}</b> · матчів з рекомендацією (кф від ${CFG.MIN_ODDS}): <b>${rows.length}</b></p>
       ${tabBody('dry', head, dryRowHtml, n => `${plural(n, 'матч', 'матчі', 'матчів')} без гола`)}
-      ${hint(`Виділено команду, що не забиває. ІТБ — індивідуальний тотал цієї команди: <b>ІТБ 0.5</b> — заб'є хоча б 1 гол; <b>ІТБ 1.5</b> — заб'є 2+. У клітинці — кф VBET і ймовірність виграшу (<span class="lg phi">від 65%</span>, <span class="lg pmid">50–64%</span>). Під матчем — рахунки останніх матчів команди (її голи першими). «5+» — серія довша за ${CFG.HISTORY_DAYS} днів історії.`)}
+      ${hint(`Виділено команду, що не забиває. ІТБ — індивідуальний тотал цієї команди: <b>ІТБ 0.5</b> — заб'є хоча б 1 гол; <b>ІТБ 1.5</b> — заб'є 2+. У клітинці — кф VBET (від ${CFG.MIN_ODDS}; «—» — нижче) і ймовірність виграшу (<span class="lg phi">від 65%</span>, <span class="lg pmid">50–64%</span>). Під матчем — рахунки останніх матчів команди (її голи першими). «5+» — серія довша за ${CFG.HISTORY_DAYS} днів історії.`)}
       ${teamsTable('Усі команди без гола 2+ матчі', s.dry, t => `<b class="n">${seriesTxt(t.n, t.capped)}</b><small>${t.lastGoal ? `гол ${dateOf(t.lastGoal)}` : 'без голів'}</small>`)}
       ${legendCard()}`;
   }
@@ -251,7 +252,7 @@
     const rows = s.rows.filter(r => r.type === 'low' && !isStarted(r));
     const head = `<thead><tr><th>Матч · серія без ТБ 1.5</th>${engine.MARKETS.filter(m => m.tab === 'low').map(m => `<th>${m.label}</th>`).join('')}</tr></thead>`;
     $view.innerHTML = `${banner()}
-      <p class="summary">Команд, у матчах яких ${CFG.LOW_MIN}+ рази поспіль не було ТБ 1.5: <b>${s.low.length}</b> · матчів найближчі 3 дні: <b>${rows.length}</b> · з кф VBET: <b>${rows.filter(r => r.bets.some(c => c.odds)).length}</b></p>
+      <p class="summary">Команд, у матчах яких ${CFG.LOW_MIN}+ рази поспіль не було ТБ 1.5: <b>${s.low.length}</b> · матчів з рекомендацією (кф від ${CFG.MIN_ODDS}): <b>${rows.length}</b></p>
       ${tabBody('low', head, lowRowHtml, n => `${plural(n, 'матч', 'матчі', 'матчів')} поспіль ≤ 1 гола`)}
       ${hint(`Виділено команду із серією: у ${CFG.LOW_MIN}+ її останніх матчах поспіль на двох було не більше 1 гола (0:0, 1:0, 0:1 — не зайшов ТБ 1.5). Ставки — загальний тотал матчу: <b>ТБ 1.5</b> — 2+ голи, <b>ТБ 2.5</b> — 3+. Під матчем — рахунки останніх матчів команди із серією.`)}
       ${teamsTable(`Усі команди із серією ${CFG.LOW_MIN}+ матчі без ТБ 1.5`, s.low, t => `<b class="n">${seriesTxt(t.n, t.capped)}</b>`)}
@@ -260,7 +261,7 @@
 
   const legendCard = () => `<details class="more card"><summary>Як це рахується</summary><div class="desc">
     <p><b>Матчі</b> — ESPN, усі турніри (чемпіонати всіх рівнів, кубки, єврокубки, Ліга націй, відбори, товариські збірних, жіночі й молодіжні), без студентських ліг США і клубних товариських. Серія — за всіма матчами команди за ${CFG.HISTORY_DAYS} днів; враховуються команди, у яких в історії щонайменше ${CFG.MIN_GAMES} матчі (інакше ESPN бачить лише їхні кубкові матчі). Рекомендація — на наступний матч команди найближчих 3 днів.</p>
-    <p><b>Кф</b> — VBET (уся лінія vbet.ua), будь-які. <b>Ймовірність</b> — модель голів (рейтинги атаки й оборони кожної команди за всіма матчами з урахуванням суперників, Пуассон з поправкою Діксона–Коулза), підігнана під кф VBET на результат і тотал; якщо VBET дає обидві сторони лінії — 70% ринок без маржі + 30% модель.</p>
+    <p><b>Кф</b> — VBET (уся лінія vbet.ua), лише від ${CFG.MIN_ODDS}: нижчі не потрапляють ні в рекомендації, ні в статистику; «—» у клітинці — кф нижче ${CFG.MIN_ODDS}. <b>Ймовірність</b> — модель голів (рейтинги атаки й оборони кожної команди за всіма матчами з урахуванням суперників, Пуассон з поправкою Діксона–Коулза), підігнана під кф VBET на результат і тотал; якщо VBET дає обидві сторони лінії — 70% ринок без маржі + 30% модель.</p>
     <p><b>Достроково.</b> Усі ставки — «більше», тож щойно лінію перевищено в основний час (другий гол на ТБ 1.5), ставка йде в статистику виграною з позначкою «достроково». Додатковий час не рахується.</p></div></details>`;
 
   // ---------- Статистика ----------

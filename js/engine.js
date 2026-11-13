@@ -1,11 +1,11 @@
 // Аналіз: однаковий код на сервері (tools/record.js) і в браузері (js/app.js).
 //
 // Серії команди рахуються за всіма її матчами в усіх турнірах ESPN за ≈ 150 днів. Рекомендація — лише на
-// НАСТУПНИЙ матч команди в межах 3 днів, кф — VBET (будь-які).
+// НАСТУПНИЙ матч команди в межах 3 днів, кф — VBET, лише від 1.35.
 //   • Засуха: команда не забиває 2+ матчі поспіль → ІТБ 0.5 і ІТБ 1.5 цієї команди;
 //   • Тотали: у 3+ останніх матчах команди поспіль на двох було не більше 1 гола (не зайшов ТБ 1.5)
 //     → ТБ 1.5 і ТБ 2.5 у її наступному матчі.
-//   • Топ: 10 рекомендацій з найбільшою ймовірністю з обох вкладок (лише з кф VBET).
+//   • Топ: 10 рекомендацій з найбільшою ймовірністю з обох вкладок (лише з кф VBET від 1.35).
 // Ймовірність: модель голів + ринок VBET (70/30).
 FP.engine = (() => {
   const { CFG } = FP;
@@ -31,6 +31,8 @@ FP.engine = (() => {
   // Ймовірність ставки: модель, а якщо VBET дає обидві сторони лінії — 70% ринок (без маржі) + 30% модель.
   function cell(key, line, pModel, over, under) {
     const p = over && under ? G.MARKET_WEIGHT * (1 / over) / (1 / over + 1 / under) + (1 - G.MARKET_WEIGHT) * pModel : pModel;
+    // Кф нижче 1.35 — не рекомендація: такої ставки немає ні в додатку, ні в статистиці.
+    if (over && over < CFG.MIN_ODDS) return { key, line, odds: null, low: true, p: null };
     return { key, line, odds: over || null, p: r4(p) };
   }
 
@@ -92,7 +94,7 @@ FP.engine = (() => {
             id, key: c.key, tab: MARKET.get(c.key).tab, ev: ev.id, slug: ev.sl, league: ev.ln, ts: ev.ts,
             home: base.home.name, away: base.away.name, side: side || null, line: c.line, odds: c.odds, p: c.p, ...extra,
           });
-        } else if (bk) keep.push(id);   // матч у лінії, але цього ринку зараз немає — запис лишається
+        } else if (bk && !c.low) keep.push(id);   // матч у лінії, але цього ринку зараз немає — запис лишається
         return { ...c, id };
       };
       const book = k => (bk ? bk[k] : undefined);
@@ -103,15 +105,17 @@ FP.engine = (() => {
         const pmf = G.poissonPmf(lambda, 12);
         const { n, capped } = dry[sd];
         const extra = { team: ev[sd].name, n, capped, xg: r2(lambda) };
+        const cells = DRY.map(mk => add(cell(mk.key, mk.line, G.overProb(pmf, mk.line), book(`${T}O${mk.line}`), book(`${T}U${mk.line}`)), sd, extra));
+        if (!cells.some(c => c.odds)) continue;   // у додатку — лише матчі з кф VBET від 1.35
         rows.push({
           type: 'dry', ev: base, side: sd, n, capped, lastGoal: lastGoal(ev[sd].id), lambda: r2(lambda), market: !!bk,
-          recent: recent(ev[sd].id, Math.min(Math.max(n, 3), 8)),
-          bets: DRY.map(mk => add(cell(mk.key, mk.line, G.overProb(pmf, mk.line), book(`${T}O${mk.line}`), book(`${T}U${mk.line}`)), sd, extra)),
+          recent: recent(ev[sd].id, Math.min(Math.max(n, 3), 8)), bets: cells,
         });
       }
 
       // Тотали: один рядок на матч, виділено команди з серією.
-      if (lowSides.length) {
+      const lowCells = lowSides.length ? LOW.map(mk => cell(mk.key, mk.line, G.totalOver(lam.lh, lam.la, mk.line), book(`O${mk.line}`), book(`U${mk.line}`))) : [];
+      if (lowCells.some(c => c.odds)) {
         const lowN = { home: low.home ? low.home.n : 0, away: low.away ? low.away.n : 0 };
         const capped = { home: !!(low.home && low.home.capped), away: !!(low.away && low.away.capped) };
         const n = Math.max(...lowSides.map(sd => lowN[sd]));
@@ -119,9 +123,9 @@ FP.engine = (() => {
         rows.push({
           type: 'low', ev: base, sides: lowSides, low: lowN, capped, n, xg: r2(lam.lh + lam.la), market: !!bk,
           recent: Object.fromEntries(['home', 'away'].map(sd => [sd, recent(ev[sd].id, Math.min(Math.max(lowN[sd], 3), 6))])),
-          bets: LOW.map(mk => add(cell(mk.key, mk.line, G.totalOver(lam.lh, lam.la, mk.line), book(`O${mk.line}`), book(`U${mk.line}`)), null, extra)),
+          bets: lowCells.map(c => add(c, null, extra)),
         });
-      }
+      } else for (const c of lowCells) add(c, null, {});   // ринку тимчасово немає — наявний запис лишається
     }
 
     // ---------- топ за ймовірністю (обидві вкладки, лише з кф VBET) ----------
